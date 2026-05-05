@@ -1,0 +1,40 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install uv package manager
+RUN pip install --no-cache-dir uv
+
+# Create a non-root user
+RUN useradd -m -u 1000 mcp && chown -R mcp:mcp /app
+USER mcp
+
+# Set default port (can be overridden at runtime)
+ENV MCP_PORT=3000
+
+# Expose the MCP server port
+EXPOSE 3000
+
+# Health check (uses MCP_PORT environment variable set at runtime)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD sh -c "curl -f http://datacommons-mcp:${MCP_PORT}/ || exit 1"
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# Run the MCP server. UV does the following:
+#   Downloads datacommons-mcp from PyPI (if not cached)
+#   Creates an isolated environment for it
+#   Installs the package and its dependencies
+#   Executes the command: datacommons-mcp serve http --port ${MCP_PORT}
+#   Caches everything for future runs
+
+CMD sh -c "python -m uv tool run datacommons-mcp serve http --port ${MCP_PORT} --host 0.0.0.0"
+

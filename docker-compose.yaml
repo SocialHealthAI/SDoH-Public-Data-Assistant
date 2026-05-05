@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+
+  dc-assistant:
+    image: "${ASSISTANT_IMAGE:-dc-assistant:local}"
+    container_name: dc-assistant
+    build:
+      context: .
+      dockerfile: analytic_assistant_build/dockerfile.openai
+      # args:
+      #   EMBEDDINGS: ${EMBEDDINGS}  # available at build time
+    # Image name is env-driven. If you set ASSISTANT_IMAGE to a registry image, compose may pull it.
+    volumes:
+      - ./agents/:/myapps:rw
+      # - ./dictionary_data:/workspace/data
+    working_dir: /myapps
+    ports:
+      - "${ASSISTANT_BIND:-127.0.0.1}:${ASSISTANT_HOST_PORT:-8052}:${ASSISTANT_CONTAINER_PORT:-8052}"
+    environment:
+      - DATACOMMONS_URI=${DATACOMMONS_URI}
+      - STREAMLIT_SERVER_ADDRESS=${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}
+      - STREAMLIT_SERVER_PORT=${ASSISTANT_CONTAINER_PORT:-8052}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DC_API_KEY=${DC_API_KEY}
+      
+    command: ["/opt/venv/bin/streamlit", "run", "streamlit_assistant.py", "--server.port", "${STREAMLIT_SERVER_PORT}", "--server.address", "${STREAMLIT_SERVER_ADDRESS}"]
+    
+    init: true
+    tty: true
+    stdin_open: true
+    restart: unless-stopped
+
+  datacommons-mcp:
+    build:
+      context: .
+      dockerfile: datacommons_server_build/dockerfile
+    container_name: datacommons-mcp-server
+    ports:
+      - "${DATACOMMONS_CONTAINER_PORT}:${DATACOMMONS_CONTAINER_PORT}"
+    environment:
+      # Required: Data Commons API key
+      - DC_API_KEY=${DC_API_KEY}
+      # Port configuration
+      - MCP_PORT=${DATACOMMONS_CONTAINER_PORT}
+      # Optional: Additional environment variables
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD", "sh", "-c", "curl -f http://datacommons-mcp:${MCP_PORT}/ || exit 1"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 30s
+    # Optional: Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Optional: Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,80 @@
+# ---- builder ----
+FROM python:3.11-slim-bookworm AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    POETRY_NO_INTERACTION=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    APP_DIR=/app \
+    VENV_DIR=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR ${APP_DIR}
+
+# Build-time apt deps (only in builder)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    build-essential curl git ca-certificates libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip and install poetry into builder
+RUN python -m pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir "poetry==1.4.2"
+
+# Copy lock files first for reproducible installs (cache-friendly)
+COPY analytic_assistant_build/pyproject.local.toml poetry.lock* ${APP_DIR}/
+
+# rename it to what Poetry expects
+RUN mv ${APP_DIR}/pyproject.local.toml ${APP_DIR}/pyproject.toml
+
+# Export frozen requirements.txt (no-dev)
+RUN poetry export -f requirements.txt --without-hashes --without dev -o /tmp/requirements.txt
+
+# Create venv and install runtime dependencies into it.
+# Install PyTorch CPU-only wheel first (smaller) using the official CPU index,
+# then install the rest of the requirements. Adjust torch version as needed.
+RUN python -m venv ${VENV_DIR} \
+ && . ${VENV_DIR}/bin/activate \
+ && python -m pip install --upgrade pip setuptools wheel \
+ && python -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch==2.2.0" \
+ && python -m pip install --no-cache-dir -r /tmp/requirements.txt || true \
+ && python -m pip cache purge
+
+# Copy project sources last (so source changes don't bust dependency layers)
+COPY . ${APP_DIR}
+
+# Clean up builder-level caches & unneeded files
+RUN rm -rf /tmp/poetry_cache /root/.cache/pip /tmp/requirements.txt \
+ && find ${VENV_DIR} -name "*.pyc" -delete
+
+# ---- runtime ----
+FROM python:3.11-slim-bookworm AS runtime
+
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/hf_cache \
+    APP_DIR=/app
+
+WORKDIR ${APP_DIR}
+
+# Minimal runtime apt packages only
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Copy the prepared virtualenv from builder (installed deps incl. CPU torch)
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy application code
+COPY --from=builder /app /app
+
+# Create HF cache folder and mount as a volume
+RUN mkdir -p /hf_cache
+VOLUME ["/hf_cache"]
+
+# Expose port for documentation purposes
+EXPOSE 8052
+
+# Default command
+CMD ["streamlit", "run", "agents/streamlit_assistant.py", "--server.port", "8052", "--server.address", "0.0.0.0"]

@@ -1,0 +1,40 @@
+# Map region hierarchy and overlay rules
+
+Single source of truth for region-type ordering and how to combine layers on a map.
+Documentation/reference for the generate_map and agent prompts.
+
+## Region type hierarchy (largest → smallest)
+
+1. Country
+2. State / Province / AdminRegion1
+3. County / District / AdminRegion2
+4. ZIP Code / ZCTA / PostalCode
+5. City / Town / Village / CensusDesignatedPlace / Place
+
+Data Commons place types map onto these levels (e.g. geoId/06 = state, geoId/06059 = county, CensusDesignatedPlace/... = place).
+
+## Overlay rules
+
+- **Choropleth (fill/color)**: Exactly one layer—the "primary" layer that has the metric data. Merge the data table with that layer's geometry; only one layer carries the color scale.
+
+- **Outlines**: Draw boundaries for the primary layer (optional) and/or any **higher** level in the hierarchy (parent regions). Use transparent fill so only the boundary shows.
+
+  Notes:
+  - ZIP codes do not always nest cleanly inside counties/states, so treat ZIP as a layer that can overlap other boundaries.
+  - If the primary layer is ZIP, you can still draw county/state outlines by requesting parent place geometries via `get_geojson_for_places` for the appropriate DCIDs.
+
+- **Labels**: Apply to the primary layer or any **lower (finer)** layer when it is visually useful.
+
+  Notes:
+  - ZIP code labels can easily clutter; keep labels minimal (or skip labels) for dense ZIP sets.
+  - Place text at centroids; avoid overlapping text.
+
+- **Never embed geometry**: Do not define GeoJSON or geometry literals in generated code. All geometry must come from get_geojson_for_places and be provided by the runtime (e.g. `GEOJSON_DATA`, and optionally `GEOJSON_OUTLINE`).
+
+## Single-layer vs two-layer vs future multi-layer
+
+- **Single-layer**: Only `geojson_ref` → runtime injects `GEOJSON_DATA`. Choropleth and merge use this layer only.
+
+- **Two-layer (primary + outline)**: `geojson_ref` + optional `outline_geojson_ref` on `generate_map`. Runtime injects `GEOJSON_DATA` (primary) and `GEOJSON_OUTLINE` (parent/higher-level boundaries). Merge metrics only with the primary layer; plot outlines from `GEOJSON_OUTLINE` with transparent fill on top.
+
+- **Future (3+ layers or label-only layer)**: Additional refs/roles (e.g. label geometry) could extend the same pattern.
