@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import json
+import re
+import urllib.parse
+import urllib.request
 
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -81,8 +84,8 @@ class SdohSearchTool(StructuredTool):
     """
     Unified indicator search facade for SDoH data.
 
-    Step 1: Data Commons-backed only (wraps existing MCP `search_indicators` tool),
-    with CMS/IHME stubbed out for iterative rollout.
+    Data Commons via MCP search_indicators; CMS via data.cms.gov data.json catalog;
+    IHME not implemented yet.
     """
 
     def __init__(self, dc_search_tool: StructuredTool, dc_observations_tool: Optional[StructuredTool] = None) -> None:
@@ -92,14 +95,16 @@ class SdohSearchTool(StructuredTool):
             name="search_sdoh_indicators",
             description=(
                 "Search for SDoH-related indicators across sources. Checks Data Commons first, "
-                "then CMS and IHME (stubs in current version). Returns candidates with source, "
-                "native_id, display name, and repository/metric_source where available."
+                "then CMS (catalog search) and IHME (stub). Returns candidates with name, source, "
+                "native_id, indicator_id, type, repository, and metric_source (when available). "
+                "When presenting results to the user, include those fields (e.g. Markdown table)—not IDs alone."
             ),
             args_schema=SearchSDoHIndicatorsInput,
             func=self._run,
         )
         object.__setattr__(self, "_dc_search_tool", dc_search_tool)
         object.__setattr__(self, "_dc_observations_tool", dc_observations_tool)
+        object.__setattr__(self, "_cms_catalog_cache", None)
 
     def _call_dc_observation_metadata(self, variable_dcid: str, place_dcid: str) -> Optional[Dict[str, Any]]:
         tool = getattr(self, "_dc_observations_tool", None)
@@ -308,6 +313,170 @@ class SdohSearchTool(StructuredTool):
 
         return items
 
+    _CMS_DATA_JSON_URL = "https://data.cms.gov/data.json"
+    _CMS_ID_RE = re.compile(r"/dataset/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/")
+
+    def _load_cms_catalog(self) -> List[Dict[str, Any]]:
+        """
+        Load CMS dataset catalog from Project Open Data `data.json`.
+
+        Note: CMS previously exposed Socrata SODA /resource endpoints, but many of those now
+        return HTTP 410. The `data.json` catalog currently points to the supported data-api/v1
+        dataset UUIDs, which we use as stable CMS measure identifiers.
+        """
+        cached = getattr(self, "_cms_catalog_cache", None)
+        if isinstance(cached, list):
+            return cached
+
+        req = urllib.request.Request(
+            self._CMS_DATA_JSON_URL,
+            headers={"Accept": "application/json", "User-Agent": "Data-Analytic-Assistant/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        datasets = payload.get("dataset")
+        if not isinstance(datasets, list):
+            datasets = []
+
+        object.__setattr__(self, "_cms_catalog_cache", datasets)
+        return datasets
+
+    def _extract_cms_dataset_uuid(self, d: Dict[str, Any]) -> Optional[str]:
+        ident = d.get("identifier")
+        if isinstance(ident, str):
+            m = self._CMS_ID_RE.search(ident)
+            if m:
+                return m.group(1)
+        # Fallback: try any distribution accessURL patterns
+        dist = d.get("distribution")
+        if isinstance(dist, list):
+            for x in dist:
+                if not isinstance(x, dict):
+                    continue
+                for k in ("accessURL", "resourcesAPI", "downloadURL"):
+                    v = x.get(k)
+                    if isinstance(v, str):
+                        m = self._CMS_ID_RE.search(v)
+                        if m:
+                            return m.group(1)
+        return None
+
+    def _score_cms_dataset(self, d: Dict[str, Any], terms: List[str], query: str) -> int:
+        hay = " ".join(
+            [
+                str(d.get("title") or ""),
+                str(d.get("description") or ""),
+                " ".join([str(x) for x in (d.get("keyword") or []) if isinstance(x, (str, int, float))]),
+                " ".join([str(x) for x in (d.get("theme") or []) if isinstance(x, (str, int, float))]),
+            ]
+        ).lower()
+        title = str(d.get("title") or "").strip().lower()
+        q = str(query or "").strip().lower()
+        score = 0
+        # Strongly prefer near-exact title matches so small max_results still finds the right dataset.
+        if q and title:
+            if q == title:
+                score += 100
+            elif q in title:
+                score += 60
+        for t in terms:
+            if t and t in hay:
+                score += 3
+        # Light boost for explicitly place-aggregated datasets.
+        for geo_hint in ("county", "state", "zip", "hrr", "cbsa", "tract", "geography", "geographic"):
+            if geo_hint in hay:
+                score += 1
+        return score
+
+    def _cms_catalog_facts(self, d: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extra fields from Project Open Data catalog only (no inference).
+        data.json does not expose per-column geography or upstream metric provenance;
+        that appears only after fetching dataset schema or rows (e.g. get_sdoh_observations).
+        """
+        themes = d.get("theme")
+        if not isinstance(themes, list):
+            themes = [themes] if themes not in (None, "") else []
+        themes = [str(x) for x in themes if x not in (None, "")]
+
+        keywords = d.get("keyword")
+        if not isinstance(keywords, list):
+            keywords = [keywords] if keywords not in (None, "") else []
+        keywords = [str(x) for x in keywords if x not in (None, "")]
+
+        temporal = d.get("temporal")
+        if temporal is None:
+            dist = d.get("distribution")
+            if isinstance(dist, list):
+                for x in dist:
+                    if isinstance(x, dict) and x.get("temporal"):
+                        temporal = x.get("temporal")
+                        break
+
+        data_api_url: Optional[str] = None
+        dist = d.get("distribution")
+        if isinstance(dist, list):
+            for x in dist:
+                if not isinstance(x, dict):
+                    continue
+                fmt = str(x.get("format") or "").upper()
+                url = x.get("accessURL")
+                if fmt == "API" and isinstance(url, str) and "/data-api/v1/dataset/" in url:
+                    data_api_url = url
+                    break
+
+        landing = d.get("landingPage")
+        ident = d.get("identifier")
+
+        out: Dict[str, Any] = {
+            "themes": themes,
+            "keywords": keywords,
+            "temporal": temporal,
+            "landing_page": landing if isinstance(landing, str) else None,
+            "dataset_viewer_url": ident if isinstance(ident, str) else None,
+            "data_api_url": data_api_url,
+        }
+        return {k: v for k, v in out.items() if v not in (None, "", [], {})}
+
+    def _search_cms(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+        datasets = self._load_cms_catalog()
+        # Tokenize query terms (very light; stable).
+        terms = [t for t in re.split(r"[^a-zA-Z0-9]+", (query or "").lower()) if len(t) >= 3]
+        scored: List[tuple[int, Dict[str, Any]]] = []
+        for d in datasets:
+            if not isinstance(d, dict):
+                continue
+            uuid = self._extract_cms_dataset_uuid(d)
+            if not uuid:
+                continue
+            s = self._score_cms_dataset(d, terms, query=query)
+            if s <= 0:
+                continue
+            scored.append((s, d))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out: List[Dict[str, Any]] = []
+        for _, d in scored[: max_results or 20]:
+            uuid = self._extract_cms_dataset_uuid(d)
+            if not uuid:
+                continue
+            item: Dict[str, Any] = {
+                "indicator_id": f"cms:{uuid}",
+                "source": "cms",
+                "native_id": uuid,
+                "name": d.get("title") or uuid,
+                "type": "CMSDataset",
+                "description": d.get("description"),
+                "repository": {"name": "CMS"},
+                "metric_source": None,  # must remain null unless CMS provides explicit dataset source metadata
+            }
+            extra = self._cms_catalog_facts(d)
+            if extra:
+                item["catalog_metadata"] = extra
+            out.append(item)
+        return out
+
     def _run(
         self,
         query: str,
@@ -340,7 +509,10 @@ class SdohSearchTool(StructuredTool):
         # Step 1 stubs
         if "cms" in allowed:
             sources_checked.append("cms")
-            warnings.append("CMS indicator search not implemented yet (stub).")
+            try:
+                results.extend(self._search_cms(query=query, max_results=max_results))
+            except Exception as e:
+                warnings.append(f"CMS indicator search failed (best-effort): {type(e).__name__}: {e}")
         if "ihme" in allowed:
             sources_checked.append("ihme")
             warnings.append("IHME indicator search not implemented yet (stub).")

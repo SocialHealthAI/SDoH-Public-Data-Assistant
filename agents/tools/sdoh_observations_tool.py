@@ -5,11 +5,13 @@ import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
+import urllib.parse
+import urllib.request
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from tools.dc_place_expand import expand_places_for_parent_and_level, normalize_place_key
-from tools.dc_v2_helpers import dc_api_key, fetch_observations_by_entity_batch
+from tools.dc_v2_helpers import dc_api_key, fetch_observations_by_entity_batch, fetch_property_values_map
 
 
 PlaceLevel = Literal[
@@ -125,6 +127,237 @@ def _coalesce(d: Dict[str, Any], keys: List[str]) -> Optional[Any]:
     return None
 
 
+_GEOID_RE = re.compile(r"^geoId/(\d+)$", re.IGNORECASE)
+
+
+def _geoid_code(place_key: str) -> Optional[str]:
+    m = _GEOID_RE.match(str(place_key).strip())
+    return m.group(1) if m else None
+
+
+_ZIP_PLACE_RE = re.compile(r"^zip/(\d{5})$", re.IGNORECASE)
+
+
+def _cms_zip_tail_from_place_id(place_id: str) -> Optional[str]:
+    """
+    Extract a 5-digit ZIP code string from a place id for CMS row matching.
+    Accepts zip/45202, bare 45202, or geoId/45202 (last form is ambiguous but used when
+    callers normalize numeric ZCTA-like ids to geoId/*).
+    """
+    s = str(place_id).strip()
+    if not s:
+        return None
+    m = _ZIP_PLACE_RE.match(s)
+    if m:
+        return m.group(1)
+    if s.isdigit() and len(s) == 5:
+        return s
+    if "/" in s:
+        tail = s.split("/", 1)[1].strip()
+        if tail.isdigit() and len(tail) == 5:
+            return tail
+    return None
+
+
+def _safe_float(x: Any) -> Optional[float]:
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, str):
+        s = x.strip().replace(",", "")
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
+
+
+def _norm_key_name(k: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(k).strip().lower()).strip("_")
+
+
+_CMS_DATA_API = "https://data.cms.gov/data-api/v1"
+
+
+def _cms_data_url(dataset_uuid: str) -> str:
+    return f"{_CMS_DATA_API}/dataset/{dataset_uuid}/data"
+
+
+def _cms_fetch_rows(dataset_uuid: str, offset: int = 0, size: int = 500) -> List[Dict[str, Any]]:
+    params = {"offset": int(offset), "size": int(size)}
+    url = _cms_data_url(dataset_uuid) + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Data-Analytic-Assistant/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, list):
+        return [r for r in payload if isinstance(r, dict)]
+    return []
+
+
+def _cms_pick_fields(sample_row: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Pick (year_field, state_field, county_field, value_field) from a sample row.
+    Minimal v1: best-effort, no guessing beyond simple name heuristics.
+    """
+    keys = list(sample_row.keys())
+    nkeys = {_norm_key_name(k): k for k in keys}
+
+    # Year: strict 4-digit year only (handled later); here we pick a likely key name.
+    for cand in ("year", "yr", "reporting_year", "measure_year", "calendar_year"):
+        if cand in nkeys:
+            year_field = nkeys[cand]
+            break
+    else:
+        year_field = None
+
+    # Geography: prefer explicit fips-like fields.
+    state_field = None
+    for cand in (
+        "state_fips",
+        "statefips",
+        "state_code",
+        "state_name",
+        "state_abbr",
+        "state_abbreviation",
+        "state_id",
+        "state",
+    ):
+        if cand in nkeys:
+            state_field = nkeys[cand]
+            break
+
+    county_field = None
+    for cand in (
+        "prscrbr_geo_cd",
+        "county_fips",
+        "countyfips",
+        "county_code",
+        "county_name",
+        "fips",
+        "county_id",
+        "county",
+    ):
+        if cand in nkeys:
+            county_field = nkeys[cand]
+            break
+
+    # Value: choose a numeric-looking field with a value-ish name, else first numeric field.
+    value_field = None
+    preferred = (
+        "value",
+        "measure",
+        "rate",
+        "count",
+        "number",
+        "pct",
+        "percent",
+        "percentage",
+        "num",
+        "total",
+    )
+    numeric_fields: List[str] = []
+    for k in keys:
+        v = sample_row.get(k)
+        if _safe_float(v) is not None:
+            numeric_fields.append(k)
+    for pref in preferred:
+        for nk, orig in nkeys.items():
+            if pref in nk and orig in numeric_fields:
+                value_field = orig
+                break
+        if value_field:
+            break
+    if value_field is None and numeric_fields:
+        value_field = numeric_fields[0]
+
+    return year_field, state_field, county_field, value_field
+
+
+def _cms_place_key_from_row(
+    row: Dict[str, Any],
+    place_level: str,
+    state_field: Optional[str],
+    county_field: Optional[str],
+    *,
+    county_name_to_geoid: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """
+    Derive join place_key for CMS rows: geoId/<fips> for state/county, zip/<5digits> for ZIP
+    (e.g. Medicare Part D Prscrbr_Geo_Lvl == ZIP). Returns None when not mappable.
+    """
+    lvl = str(place_level).strip().lower()
+
+    # CMS "by geography" layout (e.g. Medicare Part D opioid rates): Prscrbr_Geo_Lvl + Prscrbr_Geo_Cd.
+    # State rows use 2-digit state FIPS in Prscrbr_Geo_Cd; county rows use 5-digit county FIPS.
+    # This must run before legacy STATE_ID / COUNTY_NAME heuristics so state-level maps work.
+    geo_lvl = _coalesce(row, ["Prscrbr_Geo_Lvl", "prscrbr_geo_lvl"])
+    geo_cd_raw = _coalesce(row, ["Prscrbr_Geo_Cd", "prscrbr_geo_cd"])
+    if geo_lvl is not None and geo_cd_raw is not None:
+        geo_cd = str(geo_cd_raw).strip()
+        gl = str(geo_lvl).strip()
+        if geo_cd.isdigit():
+            if lvl == "state" and gl == "State" and len(geo_cd) <= 2:
+                return f"geoId/{geo_cd.zfill(2)}"
+            if lvl == "county" and gl == "County" and len(geo_cd) == 5:
+                return f"geoId/{geo_cd}"
+            # Part D uses Prscrbr_Geo_Lvl == "ZIP" (not "Zip Code") with 5-digit USPS ZIP in Prscrbr_Geo_Cd.
+            if lvl == "zip" and gl.upper() == "ZIP" and len(geo_cd) == 5:
+                return f"zip/{geo_cd}"
+
+    def _state_fips(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s.isdigit():
+            return s.zfill(2)
+        # common: state abbreviation (FL, NY, etc.) - we cannot deterministically map without a table.
+        return None
+
+    def _county_fips(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s.isdigit():
+            # Some datasets store county fips as 5-digit, some as 3-digit.
+            if len(s) == 5:
+                return s
+            if len(s) == 3:
+                return s
+        return None
+
+    sf = _state_fips(row.get(state_field)) if state_field else None
+    cf = _county_fips(row.get(county_field)) if county_field else None
+
+    if lvl == "state":
+        if sf:
+            return f"geoId/{sf}"
+        return None
+
+    if lvl == "county":
+        # Prefer 5-digit county fips if present.
+        if cf and len(cf) == 5:
+            return f"geoId/{cf}"
+        # If county is 3-digit and state is known, combine.
+        if sf and cf and len(cf) == 3:
+            return f"geoId/{sf}{cf}"
+        # Fallback: if we have a deterministic name mapping from the requested place set, use it.
+        if county_name_to_geoid and county_field:
+            cn = row.get(county_field)
+            if cn is not None:
+                k = str(cn).strip().upper()
+                return county_name_to_geoid.get(k)
+        return None
+
+    if lvl == "zip":
+        return None
+
+    # Minimal v1 doesn't attempt CBSA/HRR without explicit fields/rules.
+    return None
+
+
 def _extract_dc_observations(raw: Any) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Best-effort extraction of Data Commons observations from datacommons-mcp `get_observations`.
@@ -155,10 +388,10 @@ class SdohObservationsTool(StructuredTool):
     """
     Unified observations facade for SDoH indicators.
 
-    Step 2: Data Commons-backed via batched v2 observation API when DC_API_KEY is set
-    (avoids hundreds of MCP get_observations calls). Falls back to MCP get_observations
-    per place only if DC_API_KEY is missing. CMS/IHME are stubs. Normalizes join keys
-    and can join on (place_key, year) when multiple indicators are requested.
+    Data Commons: batched v2 observation API when DC_API_KEY is set (falls back to MCP
+    get_observations per place if not). CMS: data-api/v1 dataset fetch with deterministic
+    place_key/year normalization for supported schemas (see implementation). IHME: not yet
+    implemented. Join keys are (place_key, year); wide output joins multiple indicators.
     """
 
     def __init__(self, dc_observations_tool: StructuredTool):
@@ -166,8 +399,10 @@ class SdohObservationsTool(StructuredTool):
             name="get_sdoh_observations",
             description=(
                 "Fetch observations for one or more SDoH indicators across sources. "
-                "Data Commons is implemented; CMS/IHME are stubs. "
-                "Normalizes place_key and year and can join on (place_key, year)."
+                "Data Commons is fully implemented (batched v2 when DC_API_KEY set). "
+                "CMS is implemented for cms:<dataset_uuid> indicators via data.cms.gov "
+                "data-api (county/state geo mapping varies by dataset schema). IHME is not implemented yet. "
+                "Normalizes place_key and year; can join on (place_key, year) in wide format."
             ),
             args_schema=GetSDoHObservationsInput,
             func=self._run,
@@ -259,6 +494,7 @@ class SdohObservationsTool(StructuredTool):
         sources_checked: List[str] = []
 
         dc_pairs: List[Tuple[str, str]] = []
+        cms_indicators: List[Tuple[str, str]] = []
         for indicator_id in indicators:
             src, native = _parse_indicator_id(indicator_id)
 
@@ -267,8 +503,12 @@ class SdohObservationsTool(StructuredTool):
                 continue
 
             if src == "cms":
-                sources_checked.append("cms")
-                warnings.append("CMS observations not implemented yet (stub).")
+                if "cms" not in sources_checked:
+                    sources_checked.append("cms")
+                if not native:
+                    warnings.append(f"Empty CMS native_id for indicator {indicator_id!r}; skipping.")
+                    continue
+                cms_indicators.append((indicator_id, native))
             elif src == "ihme":
                 sources_checked.append("ihme")
                 warnings.append("IHME observations not implemented yet (stub).")
@@ -281,6 +521,178 @@ class SdohObservationsTool(StructuredTool):
                 dc_pairs.append((indicator_id, native))
             else:
                 warnings.append(f"Unknown indicator source {src!r} for indicator {indicator_id!r}; skipping.")
+
+        # CMS observations (minimal v1)
+        if cms_indicators:
+            lvl_place = str(place.level).lower()
+            # Optional filters: state/county use geoId/* tails; ZIP uses zip/<5> or zip digits from ids.
+            requested_geoid_codes: set = set()
+            requested_zip_codes: set = set()
+            for pid in place_ids or []:
+                if lvl_place == "zip":
+                    zt = _cms_zip_tail_from_place_id(pid)
+                    if zt:
+                        requested_zip_codes.add(zt)
+                else:
+                    code = _geoid_code(pid)
+                    if code:
+                        requested_geoid_codes.add(code)
+
+            # CMS data-api rows are not DCIDs; mapping supports state, county, and ZIP (Part D-style Prscrbr_*).
+            if lvl_place not in ("state", "county", "zip"):
+                warnings.append(
+                    f"CMS observations v1 only supports place.level in {{'state','county','zip'}}. "
+                    f"Requested level={place.level!r}."
+                )
+            elif lvl_place == "zip" and not requested_zip_codes:
+                warnings.append(
+                    "CMS ZIP-level fetch requires at least one parseable 5-digit ZIP in `place.ids` "
+                    "(e.g. 45202, zip/45202, or geoId/45202). Unbounded ZIP scans are not supported."
+                )
+            else:
+                county_name_to_geoid: Optional[Dict[str, str]] = None
+                # If DC_API_KEY is available and we have an explicit county set, build a deterministic
+                # mapping from county name -> geoId/<fips> using Data Commons place names.
+                if lvl_place == "zip" and place_ids:
+                    for pid in place_ids:
+                        ps = str(pid).strip().lower()
+                        if ps.startswith("geoid/") and len(ps.split("/", 1)[-1]) == 5:
+                            warnings.append(
+                                "ZIP requests: Data Commons ZCTA DCIDs are typically zip/#####; "
+                                "geoId/##### was accepted for CMS ZIP matching only—align map data keys with GeoJSON DCIDs."
+                            )
+                            break
+
+                if str(place.level).lower() == "county" and place_ids and dc_api_key():
+                    name_map = fetch_property_values_map(place_ids, "name")
+                    if name_map:
+                        m: Dict[str, str] = {}
+                        for dcid, names in name_map.items():
+                            if not names:
+                                continue
+                            # Prefer the first name; normalize to uppercase and strip common suffix.
+                            nm = str(names[0]).strip()
+                            nm = re.sub(r"\s+County\s*$", "", nm, flags=re.IGNORECASE).strip().upper()
+                            if nm and dcid and dcid.startswith("geoId/"):
+                                m[nm] = dcid
+                        if m:
+                            county_name_to_geoid = m
+
+                for indicator_id, dataset_uuid in cms_indicators:
+                    # Fetch a small window to infer fields; then stream more rows as needed.
+                    try:
+                        sample = _cms_fetch_rows(dataset_uuid, offset=0, size=5)
+                    except Exception as e:
+                        warnings.append(f"CMS fetch failed for {dataset_uuid}: {type(e).__name__}: {e}")
+                        continue
+                    if not sample:
+                        warnings.append(f"CMS dataset {dataset_uuid} returned no rows.")
+                        continue
+
+                    year_field, state_field, county_field, value_field = _cms_pick_fields(sample[0])
+                    if value_field is None:
+                        warnings.append(f"CMS dataset {dataset_uuid} has no numeric-like fields to use as value.")
+                        continue
+                    if year_field is None:
+                        warnings.append(
+                            f"CMS dataset {dataset_uuid} does not expose an annual year field; "
+                            f"cannot normalize to (place_key, year) without guessing."
+                        )
+                        continue
+                    if state_field is None and county_field is None:
+                        warnings.append(
+                            f"CMS dataset {dataset_uuid} does not expose recognizable state/county fields; "
+                            f"cannot derive place_key deterministically."
+                        )
+                        continue
+
+                    # Pull rows in pages. ZIP rows in large CMS files often start after many state/county rows.
+                    offset = 0
+                    page_size = 2000
+                    max_pages = 10
+                    if lvl_place == "zip":
+                        max_pages = 250  # up to 500k rows scanned for sparse ZIP extraction
+                    zip_targets_hit: set = set()
+
+                    for _ in range(max_pages):
+                        try:
+                            page = _cms_fetch_rows(dataset_uuid, offset=offset, size=page_size)
+                        except Exception as e:
+                            warnings.append(f"CMS fetch failed for {dataset_uuid} at offset {offset}: {type(e).__name__}: {e}")
+                            break
+                        if not page:
+                            break
+
+                        for rec in page:
+                            y = _normalize_year(rec.get(year_field))
+                            if y is None:
+                                continue
+                            if years and years != [None]:
+                                # If caller provided explicit years, filter strictly.
+                                if y not in [yy for yy in years if yy is not None]:
+                                    continue
+
+                            pk = _cms_place_key_from_row(
+                                rec,
+                                place_level=str(place.level),
+                                state_field=state_field,
+                                county_field=county_field,
+                                county_name_to_geoid=county_name_to_geoid,
+                            )
+                            if not pk:
+                                continue
+
+                            if requested_zip_codes:
+                                if not pk.startswith("zip/"):
+                                    continue
+                                ztail = pk.split("/", 1)[1]
+                                if ztail not in requested_zip_codes:
+                                    continue
+                            elif requested_geoid_codes:
+                                code = _geoid_code(pk)
+                                if code and code not in requested_geoid_codes:
+                                    continue
+
+                            v = _safe_float(rec.get(value_field))
+                            unit = None
+                            if isinstance(value_field, str):
+                                nk = _norm_key_name(value_field)
+                                if "percent" in nk or nk.endswith("_pct") or nk.startswith("pct_"):
+                                    unit = "%"
+
+                            row: Dict[str, Any] = {
+                                "place_key": pk,
+                                "place_name": None,
+                                "place_level": place.level,
+                                "year": int(y),
+                                "indicator_id": indicator_id,
+                                "value": v,
+                                "unit": unit,
+                                "source": "cms",
+                                "native_id": dataset_uuid,
+                            }
+                            if out_cfg.include_repository:
+                                row["repository"] = {"name": "CMS"}
+                            if out_cfg.include_metric_source:
+                                row["metric_source"] = None
+                            if not out_cfg.include_place_columns:
+                                row.pop("place_name", None)
+                                row.pop("place_level", None)
+                            rows.append(row)
+                            if requested_zip_codes and pk.startswith("zip/"):
+                                zip_targets_hit.add(pk.split("/", 1)[1])
+
+                        offset += page_size
+                        if requested_zip_codes and requested_zip_codes.issubset(zip_targets_hit):
+                            break
+
+                    if lvl_place == "zip" and requested_zip_codes and not requested_zip_codes.issubset(zip_targets_hit):
+                        missing = sorted(requested_zip_codes - zip_targets_hit)
+                        warnings.append(
+                            f"CMS ZIP scan did not find all requested ZIPs (missing up to {len(missing)}): "
+                            f"{missing[:10]}{'...' if len(missing) > 10 else ''}. "
+                            f"Try a larger release year or verify ZIPs exist in the dataset."
+                        )
 
         if dc_pairs and place_ids:
             native_to_indicator: Dict[str, str] = {}

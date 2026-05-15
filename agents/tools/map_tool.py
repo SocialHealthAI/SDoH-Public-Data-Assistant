@@ -84,7 +84,8 @@ class MapTool(BaseTool):
         "The tool expects: (1) structured numeric data keyed by region identifier, "
         "(2) geojson_ref for the primary choropleth geometry (from get_geojson_for_places), "
         "and optionally (3) outline_geojson_ref for a higher-level outline from a second "
-        "get_geojson_for_places call."
+        "get_geojson_for_places call. "
+        "Use figsize at least (6, 4) inches unless the user specifies otherwise."
     )
     args_schema: ClassVar[Type[BaseModel]] = MapToolInput
 
@@ -178,9 +179,12 @@ class MapTool(BaseTool):
             - Merge on dcid_norm: merged = gdf.merge(df, on="dcid_norm", how="left")
             - Use "merged" (not gdf) for the choropleth plot so every geometry gets the correct value.
 
+            Figure size (matplotlib inches, width then height):
+            - Always use plt.subplots with figsize at least (6, 4). Default to figsize=(6, 4) unless the user explicitly requests a different size.
+
             Create the figure explicitly:
 
-            fig, ax = plt.subplots(figsize=(10, 6))
+            fig, ax = plt.subplots(figsize=(6, 4))
 
             Plot the choropleth using GeoPandas:
 
@@ -230,6 +234,10 @@ class MapTool(BaseTool):
                 is visually useful. Example: if coloring counties, label county names;
                 if coloring counties and city names are available, you may label cities.
                 Place text at centroids or representative points; avoid overlapping text.
+
+                Text halos (readable labels): the runtime injects `patheffects` (matplotlib.patheffects).
+                Use path_effects=[patheffects.Stroke(linewidth=2, foreground="white"), patheffects.Normal()].
+                NEVER use plt.matplotlib.patheffects (invalid and will error).
 
                 ZIP note: ZIP labels can easily clutter; keep labels minimal or skip
                 labels when there are many ZIPs.

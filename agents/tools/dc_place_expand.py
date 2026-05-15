@@ -167,6 +167,11 @@ def resolve_within_to_parent_dcid(within: str, warnings: List[str]) -> Optional[
         return w
 
     wl = w.strip().lower()
+    # Support US parent queries like "United States", "US", "USA".
+    # Keep this deterministic: map to the well-known Data Commons DCID for the US.
+    if wl in ("united states", "united states of america", "usa", "us", "u.s.", "u.s.a."):
+        return "country/USA"
+
     wl = wl.replace("usa", "").replace("united states", "").strip(" ,")
     if wl in _US_STATE_TO_FIPS:
         return f"geoId/{_US_STATE_TO_FIPS[wl]}"

@@ -6,6 +6,7 @@ import io
 import re
 
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as patheffects
 import streamlit as st
 
 try:
@@ -110,8 +111,11 @@ class MapRenderer:
             # 2. Strip calls that would clear or finalize the figure before we render it
             clean_code = code_block.replace("plt.show()", "").replace("\nplt.close()", "")
 
-            # 2b. Strip imports (runtime already provides plt/gpd/pd)
+            # 2b. Strip imports (runtime already provides plt/gpd/pd/patheffects)
             clean_code = re.sub(r"(?m)^\s*(from\s+\S+\s+import\s+.*|import\s+.+)\s*$", "", clean_code)
+
+            # 2b2. Invalid LLM pattern: plt.matplotlib.patheffects (pyplot has no .matplotlib.patheffects)
+            clean_code = clean_code.replace("plt.matplotlib.patheffects", "patheffects")
 
             # 2c. Strip any GeoJSON literal assignments and force from_features to use injected GeoJSON
             clean_code = self._strip_problematic_geojson_assignments(clean_code)
@@ -141,6 +145,7 @@ class MapRenderer:
             # 4. Prepare execution environment with preloaded libraries
             exec_globals = {
                 "plt": plt,
+                "patheffects": patheffects,
             }
             if gpd is not None:
                 exec_globals["gpd"] = gpd

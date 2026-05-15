@@ -44,6 +44,8 @@ class ChartTool(BaseTool):
         WRONG - Never do this:
         generate_chart(user_input="assume df exists with columns X, Y, Z...")
 
+        Use figsize at least (6, 4) inches unless the user specifies otherwise.
+
         Returns: Self-contained Python/matplotlib code (not images)."""
     args_schema: ClassVar[Type[BaseModel]] = ChartToolInput
 
@@ -69,6 +71,7 @@ class ChartTool(BaseTool):
             - Do not save the plot to a file
             - Use only safe, standard plotting code
             - Do not import or access unsafe libraries (e.g., os, sys, subprocess)
+            - Always create the figure with figsize at least (6, 4) inches (width, height), e.g. fig, ax = plt.subplots(figsize=(6, 4)), unless the user explicitly requests a different size
             - Begin with a short explanation of what the chart shows
             - Follow the explanation with a valid Python code block enclosed in triple backticks
             - Examples of forbidden content: "![...](data:image/png;base64,...)", "data:image/png;base64,..." or any other embedded base64 image
