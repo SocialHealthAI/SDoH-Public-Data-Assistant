@@ -10,6 +10,9 @@ import urllib.request
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from tools.cdc_places_helpers import search_catalog as search_cdc_places_catalog
+from tools.sdoh_search_merge import interleave_search_results, per_source_cap
+
 
 class PlaceScope(BaseModel):
     level: Optional[str] = Field(
@@ -56,7 +59,7 @@ class SearchSDoHIndicatorsInput(BaseModel):
     )
     sources: Optional[List[str]] = Field(
         default=None,
-        description="Optional allowlist of sources to search. Defaults to ['datacommons','cms','ihme'].",
+        description="Optional allowlist of sources to search. Defaults to ['datacommons','cms','cdcplaces'].",
     )
     max_results: int = Field(default=20, description="Maximum number of candidates to return.")
 
@@ -85,7 +88,7 @@ class SdohSearchTool(StructuredTool):
     Unified indicator search facade for SDoH data.
 
     Data Commons via MCP search_indicators; CMS via data.cms.gov data.json catalog;
-    IHME not implemented yet.
+    CDC PLACES via Socrata measure index on data.cdc.gov.
     """
 
     def __init__(self, dc_search_tool: StructuredTool, dc_observations_tool: Optional[StructuredTool] = None) -> None:
@@ -95,7 +98,7 @@ class SdohSearchTool(StructuredTool):
             name="search_sdoh_indicators",
             description=(
                 "Search for SDoH-related indicators across sources. Checks Data Commons first, "
-                "then CMS (catalog search) and IHME (stub). Returns candidates with name, source, "
+                "then CDC PLACES (Socrata measure catalog). Returns candidates with name, source, "
                 "native_id, indicator_id, type, repository, and metric_source (when available). "
                 "When presenting results to the user, include those fields (e.g. Markdown table)—not IDs alone."
             ),
@@ -488,41 +491,65 @@ class SdohSearchTool(StructuredTool):
         sources: Optional[List[str]] = None,
         max_results: int = 20,
     ) -> Dict[str, Any]:
-        allowed = [s.lower() for s in (sources or ["datacommons", "cms", "ihme"])]
-        results: List[Dict[str, Any]] = []
+        allowed = [s.lower() for s in (sources or ["datacommons", "cms", "cdcplaces"])]
         warnings: List[str] = []
         sources_checked: List[str] = []
+        fetch_sources = [s for s in allowed if s in ("datacommons", "cms", "cdcplaces")]
+        per_cap = per_source_cap(max_results or 20, len(fetch_sources))
+        buckets: List[List[Dict[str, Any]]] = []
 
-        # Step 1: Data Commons only (real). Place/time scopes reserved for ranking later.
+        if len(fetch_sources) > 1:
+            warnings.append(
+                f"Multi-source search: up to {per_cap} candidates per source, interleaved in results "
+                f"(max_results={max_results or 20} total). Increase max_results if you need more per repository."
+            )
+
+        # Data Commons. Place/time scopes reserved for ranking later.
         if "datacommons" in allowed:
             sources_checked.append("datacommons")
             raw = self._call_dc_search(query=query, include_topics=include_topics)
-            results.extend(
+            buckets.append(
                 self._normalize_dc_results(
                     raw,
-                    max_results=max_results,
+                    max_results=per_cap,
                     include_metric_source=include_metric_source,
                     metric_source_probe_place_dcids=metric_source_probe_place_dcids,
                 )
             )
 
-        # Step 1 stubs
         if "cms" in allowed:
             sources_checked.append("cms")
             try:
-                results.extend(self._search_cms(query=query, max_results=max_results))
+                buckets.append(self._search_cms(query=query, max_results=per_cap))
             except Exception as e:
                 warnings.append(f"CMS indicator search failed (best-effort): {type(e).__name__}: {e}")
-        if "ihme" in allowed:
-            sources_checked.append("ihme")
-            warnings.append("IHME indicator search not implemented yet (stub).")
+                buckets.append([])
+        if "cdcplaces" in allowed:
+            sources_checked.append("cdcplaces")
+            try:
+                scope_level = place_scope.level if place_scope and place_scope.level else None
+                buckets.append(
+                    search_cdc_places_catalog(
+                        query=query,
+                        max_results=per_cap,
+                        place_scope_level=scope_level,
+                    )
+                )
+            except Exception as e:
+                warnings.append(f"CDC PLACES indicator search failed (best-effort): {type(e).__name__}: {e}")
+                buckets.append([])
+        unsupported = [s for s in allowed if s not in ("datacommons", "cms", "cdcplaces")]
+        for s in unsupported:
+            warnings.append(f"Source {s!r} is not supported (supported: datacommons, cms, cdcplaces).")
 
         # Best-effort light filtering/ranking hooks (no-op for now; keep args to lock signature)
         _ = place_scope
         _ = time_scope
 
+        results = interleave_search_results(buckets, max_results or 20)
+
         return {
-            "results": results[: max_results or 20],
+            "results": results,
             "sources_checked": sources_checked,
             "warnings": warnings,
         }

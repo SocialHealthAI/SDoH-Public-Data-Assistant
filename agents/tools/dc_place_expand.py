@@ -122,13 +122,33 @@ _US_ABBR_TO_FIPS: Dict[str, str] = {
 }
 
 
-def normalize_place_key(place_id: str, warnings: List[str]) -> str:
+def normalize_place_key(place_id: str, warnings: List[str], level: Optional[str] = None) -> str:
+    """
+    Normalize a place identifier to a join/map ``place_key`` (usually a Data Commons DCID).
+
+    When ``level`` is ``zip`` or ``zcta``, 5-digit codes use ``zip/<zcta>`` (required for
+    Data Commons GeoJSON). Bare 5-digit codes without a level default to ``geoId/<fips>``
+    (county-oriented legacy behavior).
+    """
     s = str(place_id).strip()
     if not s:
         warnings.append("Encountered empty place id; skipping.")
         return ""
+    lvl = str(level or "").strip().lower()
+    zip_level = lvl in ("zip", "zcta")
+
     if "/" in s:
+        if zip_level and s.lower().startswith("geoid/"):
+            tail = s.split("/", 1)[1].strip()
+            if tail.isdigit() and len(tail) == 5:
+                warnings.append(
+                    f"ZIP-level request: converted {s!r} to zip/{tail} for Data Commons ZCTA geometry."
+                )
+                return f"zip/{tail}"
         return s
+
+    if s.isdigit() and len(s) == 5 and zip_level:
+        return f"zip/{s}"
     if s.isdigit() and len(s) in (2, 5, 7, 10):
         return f"geoId/{s}"
     if s.isdigit():
@@ -291,7 +311,7 @@ def expand_places_for_parent_and_level(
     if ids_in:
         out: List[str] = []
         for pid in ids_in:
-            pk = normalize_place_key(pid, warnings)
+            pk = normalize_place_key(pid, warnings, level=level)
             if pk:
                 out.append(pk)
         return out

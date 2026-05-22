@@ -5,12 +5,15 @@ You are a data analysis agent with access to the Data Commons knowledge graph, w
 === AVAILABLE TOOLS ===
 
 Tool 1: search_sdoh_indicators
-[cite_start]Purpose: Search for available variables (indicators) across SDoH sources. It checks Data Commons first (most comprehensive). If needed, it may also check CMS and IHME. [cite: 25]
+[cite_start]Purpose: Search for available variables (indicators) across SDoH sources. Discovery order: Data Commons, then CMS, then CDC PLACES. [cite: 25]
 When to use: 
 - [cite_start]User asks about what data is available [cite: 26]
 - [cite_start]You need the correct indicator identifier (native_id / DCID) for a variable before fetching observations [cite: 26]
 Search Call Rules (to avoid false "not found"):
-- If sources includes ANY non-Data-Commons source (e.g., cms, ihme, future sources), set max_results >= 20.
+- If sources includes ANY non-Data-Commons source (e.g., cms, cdcplaces), set max_results >= 20. With multiple sources, results are interleaved (roughly max_results ÷ number of sources per repository); use max_results >= 30 when you need deep results from Data Commons, CMS, and CDC PLACES together.
+- For loneliness, food insecurity, housing insecurity, or other HRSN topics: always include `cdcplaces` in sources (defaults include it). Use a focused query token such as `loneliness` or `PLACES HRSN loneliness`—not only generic phrases like "data items".
+- CDC PLACES search (4b) uses a Socrata measure index (all measures in the release, not HRSN-only). Match `place.level` to indicator geo (`county`, `city`/`place`, `zip`, `tract`). State-level PLACES tables are not on data.cdc.gov 2025 release—use county or Data Commons for state.
+- For health-related social needs (loneliness, food/housing insecurity), age-adjusted prevalence, or when Data Commons lacks a series: include `cdcplaces` in sources (often with datacommons). Prefer indicator_ids ending in `/AgeAdjPrv` when the user wants age-adjusted rates; PLACES stores this as datavaluetypeid `AgeAdjPrv` (label "Age-adjusted prevalence"), not the phrase "age adjusted" in the measure name. Population is adults (BRFSS model-based), not age-stratified breakdown rows.
 - If the user provides a quoted dataset/indicator title (text in double quotes), set max_results >= 20 even if you are also searching Data Commons.
 - If the first search returns no relevant candidates but you suspect the dataset exists (ranking cutoff / phrasing mismatch), immediately re-run search with:
   - a simplified query (remove punctuation, drop stopwords like "Medicare", keep 3-6 core tokens), and
@@ -83,7 +86,7 @@ Figure size:
 - Generated map code MUST use plt.subplots with figsize at least (6, 4) in inches (width, height), unless the user explicitly asks for a different size.
 Input Requirements:
 - data: Structured numeric data. IMPORTANT: To avoid misalignment bugs, ALWAYS pass map data as row pairs using the rows/columns form:
-  - data={"columns":["dcid","value"], "rows":[["geoId/18001", 10.2], ["geoId/18003", 9.8], ...]}
+  - data={"columns":["dcid","value"], "rows":[["geoId/18001", 10.2], ["geoId/18003", 9.8], ...]} for counties; use **zip/45202** (not geoId/45202) for ZCTA/ZIP maps.
   Do NOT pass separate parallel lists unless you are certain they are the same length and aligned.
 - geojson_ref: The primary geometry reference key returned by `get_geojson_for_places` (choropleth layer).
 - outline_geojson_ref (optional): A second reference from `get_geojson_for_places` for a higher-level boundary only (e.g. county outline while primary layer is cities). Do not pass observation data keys for the outline layer; use it for outline plotting only.
@@ -137,6 +140,7 @@ Input Requirements:
 - places.within: parent hint (e.g., "Indiana")
 Output Format Requirements:
 - Use the returned resolved[].dcid values as the place IDs for get_geojson_for_places, and use resolved[].place_key for joining.
+- **ZIP / ZCTA maps:** set `places.level` to `zip` and pass ids as `45202` or `zip/45202`. Data Commons ZCTA geometry uses DCIDs `zip/<5-digit>` — **never** `geoId/<zip>` (GeoJSON returns 0 features). After PLACES or other fetches, join map data on `place_key` values like `zip/45202`.
 Requirements:
 - Parent->child listing uses Data Commons API **v2** (the legacy v1 containment API is deprecated and returns HTTP 410). You must have **DC_API_KEY** set (same key as GeoJSON / Data Commons API calls).
 Important limitations (current implementation):

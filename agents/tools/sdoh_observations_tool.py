@@ -10,6 +10,16 @@ import urllib.request
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from tools.cdc_places_helpers import (
+    MAX_PLACES_LOCATION_IDS,
+    dataset_id_for_geo_level,
+    extract_location_ids,
+    fetch_places_observations_batched,
+    metric_source_from_row,
+    normalize_places_geo_level,
+    parse_native_id,
+    place_key_from_location_id,
+)
 from tools.dc_place_expand import expand_places_for_parent_and_level, normalize_place_key
 from tools.dc_v2_helpers import dc_api_key, fetch_observations_by_entity_batch, fetch_property_values_map
 
@@ -390,8 +400,9 @@ class SdohObservationsTool(StructuredTool):
 
     Data Commons: batched v2 observation API when DC_API_KEY is set (falls back to MCP
     get_observations per place if not). CMS: data-api/v1 dataset fetch with deterministic
-    place_key/year normalization for supported schemas (see implementation). IHME: not yet
-    implemented. Join keys are (place_key, year); wide output joins multiple indicators.
+    place_key/year normalization for supported schemas (see implementation). CDC PLACES:
+    Socrata fetch for cdcplaces:<geo>/<MeasureId>/<DataValueTypeID> (county/place/zip/tract).
+    Join keys are (place_key, year); wide output joins multiple indicators.
     """
 
     def __init__(self, dc_observations_tool: StructuredTool):
@@ -401,7 +412,9 @@ class SdohObservationsTool(StructuredTool):
                 "Fetch observations for one or more SDoH indicators across sources. "
                 "Data Commons is fully implemented (batched v2 when DC_API_KEY set). "
                 "CMS is implemented for cms:<dataset_uuid> indicators via data.cms.gov "
-                "data-api (county/state geo mapping varies by dataset schema). IHME is not implemented yet. "
+                "data-api (county/state geo mapping varies by dataset schema). "
+                "CDC PLACES is implemented for cdcplaces:<geo_level>/<MeasureId>/<DataValueTypeID> "
+                "(county/place/zip/tract; datavaluetypeid AgeAdjPrv or CrdPrv; supports place.within via DC expansion). "
                 "Normalizes place_key and year; can join on (place_key, year) in wide format."
             ),
             args_schema=GetSDoHObservationsInput,
@@ -448,7 +461,7 @@ class SdohObservationsTool(StructuredTool):
         join_cfg = join or JoinRequest()
         out_cfg = output or OutputRequest()
 
-        allowed_sources = [s.lower() for s in (sources or ["datacommons", "cms", "ihme"])]
+        allowed_sources = [s.lower() for s in (sources or ["datacommons", "cms", "cdcplaces"])]
         warnings: List[str] = []
 
         # Guardrail: multi-indicator requests must specify both time and place.
@@ -495,6 +508,7 @@ class SdohObservationsTool(StructuredTool):
 
         dc_pairs: List[Tuple[str, str]] = []
         cms_indicators: List[Tuple[str, str]] = []
+        cdcplaces_indicators: List[Tuple[str, str]] = []
         for indicator_id in indicators:
             src, native = _parse_indicator_id(indicator_id)
 
@@ -509,9 +523,13 @@ class SdohObservationsTool(StructuredTool):
                     warnings.append(f"Empty CMS native_id for indicator {indicator_id!r}; skipping.")
                     continue
                 cms_indicators.append((indicator_id, native))
-            elif src == "ihme":
-                sources_checked.append("ihme")
-                warnings.append("IHME observations not implemented yet (stub).")
+            elif src == "cdcplaces":
+                if "cdcplaces" not in sources_checked:
+                    sources_checked.append("cdcplaces")
+                if not native:
+                    warnings.append(f"Empty CDC PLACES native_id for indicator {indicator_id!r}; skipping.")
+                    continue
+                cdcplaces_indicators.append((indicator_id, native))
             elif src == "datacommons":
                 if "datacommons" not in sources_checked:
                     sources_checked.append("datacommons")
@@ -694,6 +712,125 @@ class SdohObservationsTool(StructuredTool):
                             f"Try a larger release year or verify ZIPs exist in the dataset."
                         )
 
+        if cdcplaces_indicators:
+            if not place_ids and not place.within:
+                warnings.append(
+                    "CDC PLACES requires `place.ids` and/or `place.within` (with DC_API_KEY for parent expansion)."
+                )
+            elif "cdcplaces_year_column" not in warnings:
+                warnings.append(
+                    "cdcplaces_year_column: PLACES `year` is the BRFSS survey year in the dataset "
+                    "(not the PLACES release title year)."
+                )
+
+            for indicator_id, native in cdcplaces_indicators:
+                try:
+                    geo_level, measure_id, value_type_id = parse_native_id(native)
+                except ValueError as e:
+                    warnings.append(str(e))
+                    continue
+
+                if geo_level == "state":
+                    warnings.append(
+                        "CDC PLACES 2025 Open Data has no state-level table on data.cdc.gov "
+                        "(use county/place/ZCTA indicators, or Data Commons for state-level estimates)."
+                    )
+                    continue
+
+                if not dataset_id_for_geo_level(geo_level):
+                    warnings.append(
+                        f"CDC PLACES geo_level={geo_level!r} is not configured (no Socrata dataset id)."
+                    )
+                    continue
+
+                req_level = normalize_places_geo_level(str(place.level))
+                ind_level = normalize_places_geo_level(geo_level)
+                if req_level != ind_level:
+                    warnings.append(
+                        f"place.level={place.level!r} does not match indicator geo_level={geo_level!r} "
+                        f"for {indicator_id!r}; place ids may not align with PLACES locationid values."
+                    )
+
+                location_id_list = extract_location_ids(place_ids or [], geo_level, warnings)
+                if not location_id_list:
+                    continue
+
+                if len(location_id_list) > MAX_PLACES_LOCATION_IDS:
+                    warnings.append(
+                        f"CDC PLACES: truncating {len(location_id_list)} locations to "
+                        f"{MAX_PLACES_LOCATION_IDS} for SoQL IN clause limits."
+                    )
+                    location_id_list = location_id_list[:MAX_PLACES_LOCATION_IDS]
+
+                requested_loc = set(location_id_list)
+
+                for y in years:
+                    try:
+                        raw_rows = fetch_places_observations_batched(
+                            geo_level=geo_level,
+                            measure_id=measure_id,
+                            data_value_type_id=value_type_id,
+                            location_ids=location_id_list,
+                            year=(None if y is None else int(y)),
+                        )
+                    except Exception as e:
+                        warnings.append(
+                            f"CDC PLACES fetch failed for {indicator_id!r}: {type(e).__name__}: {e}"
+                        )
+                        continue
+
+                    if not raw_rows and value_type_id == "AgeAdjPrv":
+                        warnings.append(
+                            f"No age-adjusted (datavaluetypeid=AgeAdjPrv) rows for {measure_id!r}; "
+                            f"PLACES label is 'Age-adjusted prevalence'."
+                        )
+
+                    for rec in raw_rows:
+                        loc = rec.get("locationid") or rec.get("LocationID")
+                        if loc is None:
+                            continue
+                        loc_s = re.sub(r"\D", "", str(loc))
+                        if loc_s not in requested_loc:
+                            continue
+                        pk = place_key_from_location_id(str(loc), geo_level)
+                        if not pk:
+                            continue
+
+                        year_raw = rec.get("year") or rec.get("Year")
+                        oy = _normalize_year(year_raw)
+                        if y is not None and oy is not None and int(oy) != int(y):
+                            continue
+                        if y is not None and oy is None:
+                            continue
+
+                        val_raw = rec.get("data_value") or rec.get("DataValue")
+                        v = _safe_float(val_raw)
+                        unit = rec.get("data_value_unit") or rec.get("DataValueUnit")
+                        if not unit and "prevalence" in str(
+                            rec.get("data_value_type") or rec.get("DataValueType") or ""
+                        ).lower():
+                            unit = "%"
+
+                        row = {
+                            "place_key": pk,
+                            "place_name": rec.get("locationname") or rec.get("LocationName"),
+                            "place_level": place.level,
+                            "year": int(y) if y is not None else (int(oy) if oy is not None else None),
+                            "indicator_id": indicator_id,
+                            "value": v,
+                            "unit": unit,
+                            "source": "cdcplaces",
+                            "native_id": native,
+                        }
+                        if out_cfg.include_repository:
+                            row["repository"] = {"name": "CDC PLACES"}
+                        if out_cfg.include_metric_source:
+                            row["metric_source"] = metric_source_from_row(rec)
+                        if not out_cfg.include_place_columns:
+                            row.pop("place_name", None)
+                            row.pop("place_level", None)
+                        rows.append(row)
+
         if dc_pairs and place_ids:
             native_to_indicator: Dict[str, str] = {}
             for iid, nat in dc_pairs:
@@ -726,7 +863,7 @@ class SdohObservationsTool(StructuredTool):
                         if not ind_id:
                             continue
                         native = str(var)
-                        place_key = normalize_place_key(str(ent), warnings) or str(ent)
+                        place_key = normalize_place_key(str(ent), warnings, level=str(place.level)) or str(ent)
                         oy = _normalize_year(rec.get("date"))
                         if y is not None:
                             if oy is None or int(oy) != int(y):
@@ -783,7 +920,7 @@ class SdohObservationsTool(StructuredTool):
                 )
                 for indicator_id, native in dc_pairs:
                     for pid in place_ids:
-                        place_key = normalize_place_key(pid, warnings)
+                        place_key = normalize_place_key(pid, warnings, level=str(place.level))
                         if not place_key:
                             continue
                         for y in years:

@@ -58,8 +58,8 @@ class ResolvePlacesForMapTool(StructuredTool):
             description=(
                 "Resolve places to Data Commons DCIDs and join-ready place_key values. "
                 "Uses Data Commons v2 place APIs (requires DC_API_KEY). "
-                "Supports FIPS→geoId normalization, parent DCID + level expansion, and US state name/abbr as parent "
-                "(e.g. within='Indiana', level='county')."
+                "Supports FIPS→geoId normalization, ZIP→zip/<5-digit> when level=zip, parent DCID + level expansion, "
+                "and US state name/abbr as parent (e.g. within='Indiana', level='county')."
             ),
             args_schema=ResolvePlacesForMapInput,
             func=self._run,
@@ -76,7 +76,7 @@ class ResolvePlacesForMapTool(StructuredTool):
         explicit_ids = [str(x).strip() for x in (places.ids or []) if str(x).strip()]
         normalized_explicit: List[str] = []
         for pid in explicit_ids:
-            pk = normalize_place_key(pid, warnings)
+            pk = normalize_place_key(pid, warnings, level=str(level))
             if not pk:
                 unmatched.append({"input": pid, "reason": "empty"})
                 continue
