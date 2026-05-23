@@ -13,6 +13,7 @@ services:
     # Image name is env-driven. If you set ASSISTANT_IMAGE to a registry image, compose may pull it.
     volumes:
       - ./agents/:/myapps:rw
+      - ./tests:/app/tests:ro
       # - ./dictionary_data:/workspace/data
     working_dir: /myapps
     ports:

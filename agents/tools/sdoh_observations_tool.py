@@ -415,7 +415,8 @@ class SdohObservationsTool(StructuredTool):
                 "data-api (county/state geo mapping varies by dataset schema). "
                 "CDC PLACES is implemented for cdcplaces:<geo_level>/<MeasureId>/<DataValueTypeID> "
                 "(county/place/zip/tract; datavaluetypeid AgeAdjPrv or CrdPrv; supports place.within via DC expansion). "
-                "Normalizes place_key and year; can join on (place_key, year) in wide format."
+                "Normalizes place_key and year; joins multiple indicators into wide format by default "
+                "(one column per indicator_id on place_key, year). Pass output.format='long' to keep tidy rows."
             ),
             args_schema=GetSDoHObservationsInput,
             func=self._run,
@@ -460,6 +461,9 @@ class SdohObservationsTool(StructuredTool):
 
         join_cfg = join or JoinRequest()
         out_cfg = output or OutputRequest()
+        # Multi-indicator fetches default to wide so correlation/regression/chart tools get one column per variable.
+        if len(indicators) > 1 and output is None:
+            out_cfg = OutputRequest(format="wide")
 
         allowed_sources = [s.lower() for s in (sources or ["datacommons", "cms", "cdcplaces"])]
         warnings: List[str] = []

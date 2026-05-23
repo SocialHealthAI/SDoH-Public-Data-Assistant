@@ -1,0 +1,23 @@
+[
+  {
+    "measureid": "LONELINESS",
+    "measure": "Loneliness among adults",
+    "category": "Health-Related Social Needs",
+    "datavaluetypeid": "AgeAdjPrv",
+    "data_value_type": "Age-adjusted prevalence"
+  },
+  {
+    "measureid": "LONELINESS",
+    "measure": "Loneliness among adults",
+    "category": "Health-Related Social Needs",
+    "datavaluetypeid": "CrdPrv",
+    "data_value_type": "Crude prevalence"
+  },
+  {
+    "measureid": "DIABETES",
+    "measure": "Diagnosed diabetes among adults",
+    "category": "Health Outcomes",
+    "datavaluetypeid": "AgeAdjPrv",
+    "data_value_type": "Age-adjusted prevalence"
+  }
+]

@@ -32,12 +32,41 @@ All new tests should use **mocks or fixtures**—no network in the default `pyte
 
 ## How to run
 
+### Canonical: running `dc-assistant` container (recommended)
+
+The assistant image uses **LangChain 0.3.x** at `/opt/venv`. You can run pytest **while Streamlit is up** — `docker compose exec` does not stop the app.
+
+`docker-compose.yaml` mounts host `./tests` → `/app/tests` so new test files are visible without rebuilding the image. Application code still comes from `./agents` → `/myapps` (run pytest with `cd /myapps` so `tools.*` imports resolve).
+
+```bash
+# From repo root, with dc-assistant running:
+docker compose exec dc-assistant bash -lc \
+  "/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q"
+```
+
+Windows helper:
+
+```powershell
+.\scripts\run-unit-tests-in-container.ps1
+.\scripts\run-unit-tests-in-container.ps1 -v   # passes -v to pytest
+```
+
+After changing the `tests/` volume mount, recreate the container once: `docker compose up -d dc-assistant`.
+
+**Cursor:** Run Task → **Unit tests (dc-assistant container)** (`.vscode/tasks.json`, default test task). That is the source-of-truth run; local Windows Python may still show only 19 tests if LangChain 1.x is installed globally.
+
+Optional: **Dev Containers: Attach to Running Container** → `dc-assistant`, interpreter `/opt/venv/bin/python`, pytest cwd `/myapps`, args `/app/tests/unit` — enables the Testing sidebar inside the container.
+
+### Local (Cursor / host Python only)
+
 From the `agents/` directory (so `tools.*` imports resolve):
 
 ```bash
 cd agents
 python -m pytest ../tests/unit/ -q
 ```
+
+Requires LangChain **0.3.x** on that interpreter; otherwise H1/H2 modules are skipped (19 tests only).
 
 Optional integration (network):
 

@@ -1,0 +1,11 @@
+{
+  "title": "Medicare Part D Opioid Prescribing Rates by Geography",
+  "description": "County and ZIP level opioid prescribing metrics from CMS.",
+  "keyword": ["opioid", "county", "prescribing"],
+  "identifier": "https://data.cms.gov/dataset/12345678-1234-1234-1234-123456789abc",
+  "distribution": [
+    {
+      "accessURL": "https://data.cms.gov/dataset/12345678-1234-1234-1234-123456789abc/resource/abcd"
+    }
+  ]
+}

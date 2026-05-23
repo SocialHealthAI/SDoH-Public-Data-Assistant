@@ -76,6 +76,24 @@ MOCK_INDEX = [
     },
 ]
 
+# Unrelated HRSN row that shares "among adults" wording (regression: "age" substring in "among").
+MOCK_INDEX_HRSN_DECOY = MOCK_INDEX + [
+    {
+        "measure_id": "FOODINSECU",
+        "measure": "Food insecurity among adults",
+        "category": "Health-Related Social Needs",
+        "data_value_type_id": "AgeAdjPrv",
+        "data_value_type_label": "Age-adjusted prevalence",
+    },
+    {
+        "measure_id": "ACCESSAGE",
+        "measure": "Access to age-friendly community resources among adults",
+        "category": "Health-Related Social Needs",
+        "data_value_type_id": "AgeAdjPrv",
+        "data_value_type_label": "Age-adjusted prevalence",
+    },
+]
+
 
 @patch("tools.cdc_places_helpers.fetch_measure_index", return_value=MOCK_INDEX)
 def test_search_loneliness_socrata_index(mock_idx):
@@ -90,6 +108,22 @@ def test_search_loneliness_socrata_index(mock_idx):
 def test_search_diabetes(mock_idx):
     results = search_catalog("diabetes county", max_results=5)
     assert any("DIABETES" in r["indicator_id"] for r in results)
+
+
+@patch("tools.cdc_places_helpers.fetch_measure_index", return_value=MOCK_INDEX_HRSN_DECOY)
+def test_search_scoring_no_false_positive_age_in_among(mock_idx):
+    results = search_catalog("loneliness among adults county", max_results=5)
+    assert results
+    assert "LONELINESS" in results[0]["indicator_id"]
+    loneliness_rank = next(
+        i for i, r in enumerate(results) if "LONELINESS" in r["indicator_id"]
+    )
+    food_rank = next(
+        (i for i, r in enumerate(results) if "FOODINSECU" in r["indicator_id"]),
+        len(results),
+    )
+    assert loneliness_rank < food_rank
+    mock_idx.assert_called_once()
 
 
 def test_build_indicator_id_roundtrip():

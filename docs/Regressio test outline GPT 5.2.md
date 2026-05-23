@@ -74,6 +74,8 @@ show a map of census tracts for tracks 39061000100 39061000200 39061000300 39061
 
 for "Lack of social and emotional support among adults” for year 202
 
+#### Regression
+provide regression analysis where (Count\_Person\_BelowPovertyLevelInThePast12Months / population) is the dependent variable and Percent\_Person\_WithDiabetes is the independent variable for counties in the state of Indiana for the year 2021
 
 
 #### Multiple Source Join Test

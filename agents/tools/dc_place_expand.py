@@ -149,6 +149,8 @@ def normalize_place_key(place_id: str, warnings: List[str], level: Optional[str]
 
     if s.isdigit() and len(s) == 5 and zip_level:
         return f"zip/{s}"
+    if s.isdigit() and lvl == "tract" and len(s) == 11:
+        return f"geoId/{s}"
     if s.isdigit() and len(s) in (2, 5, 7, 10):
         return f"geoId/{s}"
     if s.isdigit():
