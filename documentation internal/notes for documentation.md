@@ -1,7 +1,7 @@
 #### unit tests
 unit tests must run the same container environment.  Cursor instructs this in .vscode/tasks.json
 
- docker compose exec dc-assistant bash -lc "/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q"
+ docker compose exec public-data-assistant bash -lc "/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q"
 
 
 #### architecture:

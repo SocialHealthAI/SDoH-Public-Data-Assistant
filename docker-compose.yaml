@@ -2,9 +2,9 @@ version: '3.8'
 
 services:
 
-  dc-assistant:
-    image: "${ASSISTANT_IMAGE:-dc-assistant:local}"
-    container_name: dc-assistant
+  public-data-assistant:
+    image: "${ASSISTANT_IMAGE:-public-data-assistant:local}"
+    container_name: public-data-assistant
     build:
       context: .
       dockerfile: analytic_assistant_build/dockerfile.openai
@@ -32,11 +32,12 @@ services:
     stdin_open: true
     restart: unless-stopped
 
-  datacommons-mcp:
+  data-commons-mcp:
+    image: "${DATACOMMONS_MCP_IMAGE:-data-commons-mcp:local}"
     build:
       context: .
       dockerfile: datacommons_server_build/dockerfile
-    container_name: datacommons-mcp-server
+    container_name: data-commons-mcp
     ports:
       - "${DATACOMMONS_CONTAINER_PORT}:${DATACOMMONS_CONTAINER_PORT}"
     environment:
@@ -48,7 +49,7 @@ services:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
     # healthcheck:
-    #   test: ["CMD", "sh", "-c", "curl -f http://datacommons-mcp:${MCP_PORT}/ || exit 1"]
+    #   test: ["CMD", "sh", "-c", "curl -f http://data-commons-mcp:${MCP_PORT}/ || exit 1"]
     #   interval: 10s
     #   timeout: 5s
     #   retries: 3

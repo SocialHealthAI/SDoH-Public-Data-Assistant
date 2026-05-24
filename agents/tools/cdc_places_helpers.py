@@ -402,7 +402,7 @@ def extract_location_ids(
 
 
 def _socrata_headers() -> Dict[str, str]:
-    headers = {"Accept": "application/json", "User-Agent": "Data-Analytic-Assistant/1.0"}
+    headers = {"Accept": "application/json", "User-Agent": "SDoH-Public-Data-Assistant/1.0"}
     token = os.environ.get("CDC_PLACES_APP_TOKEN", "").strip()
     if token:
         headers["X-App-Token"] = token

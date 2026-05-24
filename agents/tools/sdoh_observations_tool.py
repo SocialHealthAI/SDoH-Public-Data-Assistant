@@ -199,7 +199,7 @@ def _cms_data_url(dataset_uuid: str) -> str:
 def _cms_fetch_rows(dataset_uuid: str, offset: int = 0, size: int = 500) -> List[Dict[str, Any]]:
     params = {"offset": int(offset), "size": int(size)}
     url = _cms_data_url(dataset_uuid) + "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Data-Analytic-Assistant/1.0"})
+    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "SDoH-Public-Data-Assistant/1.0"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     if isinstance(payload, list):

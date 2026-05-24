@@ -32,15 +32,15 @@ All new tests should use **mocks or fixtures**—no network in the default `pyte
 
 ## How to run
 
-### Canonical: running `dc-assistant` container (recommended)
+### Canonical: running `public-data-assistant` container (recommended)
 
 The assistant image uses **LangChain 0.3.x** at `/opt/venv`. You can run pytest **while Streamlit is up** — `docker compose exec` does not stop the app.
 
 `docker-compose.yaml` mounts host `./tests` → `/app/tests` so new test files are visible without rebuilding the image. Application code still comes from `./agents` → `/myapps` (run pytest with `cd /myapps` so `tools.*` imports resolve).
 
 ```bash
-# From repo root, with dc-assistant running:
-docker compose exec dc-assistant bash -lc \
+# From repo root, with public-data-assistant running:
+docker compose exec public-data-assistant bash -lc \
   "/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q"
 ```
 
@@ -51,11 +51,11 @@ Windows helper:
 .\scripts\run-unit-tests-in-container.ps1 -v   # passes -v to pytest
 ```
 
-After changing the `tests/` volume mount, recreate the container once: `docker compose up -d dc-assistant`.
+After changing the `tests/` volume mount, recreate the container once: `docker compose up -d public-data-assistant`.
 
-**Cursor:** Run Task → **Unit tests (dc-assistant container)** (`.vscode/tasks.json`, default test task). That is the source-of-truth run; local Windows Python may still show only 19 tests if LangChain 1.x is installed globally.
+**Cursor:** Run Task → **Unit tests (public-data-assistant container)** (`.vscode/tasks.json`, default test task). That is the source-of-truth run; local Windows Python may still show only 19 tests if LangChain 1.x is installed globally.
 
-Optional: **Dev Containers: Attach to Running Container** → `dc-assistant`, interpreter `/opt/venv/bin/python`, pytest cwd `/myapps`, args `/app/tests/unit` — enables the Testing sidebar inside the container.
+Optional: **Dev Containers: Attach to Running Container** → `public-data-assistant`, interpreter `/opt/venv/bin/python`, pytest cwd `/myapps`, args `/app/tests/unit` — enables the Testing sidebar inside the container.
 
 ### Local (Cursor / host Python only)
 

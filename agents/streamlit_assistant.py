@@ -1,5 +1,5 @@
 """
-Data Commons Assistant - Main Streamlit Application
+SDoH Public Data Assistant - Main Streamlit Application
 """
 import streamlit as st
 import os
@@ -51,7 +51,7 @@ def escape_markdown(text):
     return text
 
 
-st.title("🧠 Data Commons Assistant")
+st.title("🧠 SDoH Public Data Assistant")
 
 # Initialize Session State
 if "messages" not in st.session_state:
@@ -145,7 +145,7 @@ if st.session_state["show_audit"] and st.session_state["last_result"]:
 
 # --- INPUT AREA ---
 
-prompt = st.chat_input("Ask me about Data Commons topics")
+prompt = st.chat_input("Ask about public SDoH indicators, places, or analyses")
 
 if prompt:
     st.session_state["show_audit"] = False

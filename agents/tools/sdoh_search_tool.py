@@ -333,7 +333,7 @@ class SdohSearchTool(StructuredTool):
 
         req = urllib.request.Request(
             self._CMS_DATA_JSON_URL,
-            headers={"Accept": "application/json", "User-Agent": "Data-Analytic-Assistant/1.0"},
+            headers={"Accept": "application/json", "User-Agent": "SDoH-Public-Data-Assistant/1.0"},
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode("utf-8"))

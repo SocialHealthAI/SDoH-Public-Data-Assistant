@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Unit tests (dc-assistant container)",
+      "label": "Unit tests (public-data-assistant container)",
       "type": "shell",
-      "command": "docker compose exec dc-assistant bash -lc \"/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q\"",
+      "command": "docker compose exec public-data-assistant bash -lc \"/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -q\"",
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -19,9 +19,9 @@
       "problemMatcher": []
     },
     {
-      "label": "Unit tests (dc-assistant container, verbose)",
+      "label": "Unit tests (public-data-assistant container, verbose)",
       "type": "shell",
-      "command": "docker compose exec dc-assistant bash -lc \"/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -v\"",
+      "command": "docker compose exec public-data-assistant bash -lc \"/opt/venv/bin/pip install -q pytest && cd /myapps && /opt/venv/bin/python -m pytest /app/tests/unit/ -v\"",
       "options": {
         "cwd": "${workspaceFolder}"
       },
