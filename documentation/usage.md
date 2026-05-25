@@ -8,7 +8,7 @@ http://localhost:8052
 
 Enter prompts in the chat input. When the agent finishes, you can expand **intermediate tool steps** to see which indicators were searched, which observations were fetched, and how tables were shaped for analysis. An optional **audit** reviews the run for gaps or improvements.
 
-![assistant screen](assistant.png)
+![Assistant chat screen](assistant-screen.png)
 
 ### Connected data sources
 
