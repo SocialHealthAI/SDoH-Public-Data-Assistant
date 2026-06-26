@@ -73,7 +73,7 @@ For Indiana counties in 2021, build a wide table with poverty rate (Count\_Perso
 
 The agent fetches observations, builds one row per county with separate numeric columns and displays the table and the scatter plot.
 
-![Scatter plot example](documentation/scatter.png)
+![Scatter plot example](documentation/image/scatter.png)
 
 #### Map (Data Commons)
 
@@ -85,7 +85,7 @@ show a map of the counties in Indiana for Percent_Person_WithDiabetes, in the ye
 
 Map ready. The app renders an interactive choropleth in the chat UI.
 
-![Indiana county map example](documentation/indiana.png)
+![Indiana county map example](documentation/image/indiana.png)
 
 #### Multi-source comparison (CDC PLACES + Data Commons)
 
