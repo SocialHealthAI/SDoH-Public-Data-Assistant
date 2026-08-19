@@ -2,10 +2,6 @@
 
 ![map development.png](image\map development.png)
 
-        <p style="text-align:center;font-size:15px">
-           <img src="http://socialhealthai.org/wp-content/uploads/2026/06/map-development.png" alt="Map development" width="480" height="320">
-        Map development</p>
-
 If your project involves public data, you have probably spent more time data wrangling than performing analysis or building models. This is especially true when data is derived from multiple public sources or must be integrated with your own datasets. There is no single standard for public SDoH data, and datasets often differ in definitions, geographic levels, identifiers, and reporting periods. As a result, analysts spend significant time determining whether datasets can be combined before statistical analysis or machine learning can begin.
 
 This article shows how an AI assistant can reduce much of the exploratory work involved in discovering and modeling of public SDoH data. An open-source AI assistant will be highlighted that integrates several of the most widely used public data sources. The assistant can help find relevant variables, understand geographic and temporal coverage, and compare related measures across sources before building statistical, machine learning, or AI pipelines.
@@ -57,11 +53,6 @@ Conversational AI agents that orchestrate data tools are well suited to data int
 
 ![analytic assistant art.png](image\analytic assistant art.png)
 
-        <p style="text-align:center;font-size:15px">
-           <img src="http://socialhealthai.org/wp-content/uploads/2026/06/analytic-assistant-art.png" alt="Analytic assistant" width="400" height="300">
-        Original artwork by author, modified using Gemini &amp; ChatGPT</p>
-							Original artwork by author, modified using Gemini & ChatGPT_
-
 For example, you might ask: _“For Ohio counties in 2023, find measures of social isolation and unemployment, check that both are available at the county level, and calculate their Pearson correlation.”_ An assistant can search several sources for metrics, note the original source and description of the metrics, fetch values by county FIPS code, drop rows with missing data, compute the correlation, and return a table plus a scatter plot.
 
 The open-source project: [SDoH Public Data Assistant](https://github.com/SocialHealthAI/SDoH-Public-Data-Assistant) is a chat application that helps you explore and analyze public data repositories relevant to SDoH.  You ask questions in natural language; a reasoning agent interprets them, discovers indicators across connected sources and fetches observations for places and time periods.  It can run statistical analyses, including correlation, regression, and simple forecasts.  It can also produce charts and maps from the results.  The assistant connects to **Google Data Commons**, **Centers for Medicare & Medicaid Services (CMS) datasets**, and **CDC PLACES**. 
@@ -96,10 +87,6 @@ We use the assistant chat page to ask "_Are there indicators for people below po
 
 ![assistant-screen-1-article.png](image\assistant-screen-1-article.png)
 
-        <p style="text-align:center;font-size:15px">
-           <img src="http://socialhealthai.org/wp-content/uploads/2026/06/assistant-screen-1-article.png" alt="Assistant chat: indicator discovery" width="500" height="286">
-        Assistant chat: indicator discovery</p>
-
 The assistant searches the sources and uses source metadata to respond with a number of candidate indicators (not shown in the image above). Note that tools are provided to view the logic steps used to complete the request, and to audit the response using a separate LLM.  The indicators that look like the best candidates are:
 
 | Metric | Source | Repository | Metric Source | Indicator ID |
@@ -125,10 +112,6 @@ Show a map of counties in Indiana for cdcplaces:county/DIABETES/AgeAdjPrv in the
 This query provides a choropleth map with a legend.  Data Commons is used to find the polygon shapes to represent counties.
 
 ![assistant-map-1-article.png](image\assistant-map-1-article.png)
-
-        <p style="text-align:center;font-size:15px">
-           <img src="http://socialhealthai.org/wp-content/uploads/2026/06/assistant-map-1-article.png" alt="Indiana county diabetes prevalence map" width="350" height="345">
-        Indiana county diabetes prevalence map (2023)</p>
 
 #### Step 4: Reconcile the Indicators
 
@@ -156,10 +139,6 @@ The assistant queries the sources, joins the data on common counties and produce
 
 ![assistant-plot-1-article.png](image\assistant-plot-1-article.png)
 
-        <p style="text-align:center;font-size:15px">
-           <img src="http://socialhealthai.org/wp-content/uploads/2026/06/assistant-plot-1-article.png" alt="Poverty and diabetes correlation scatter plot" width="500" height="290">
-        Poverty and diabetes correlation scatter plot (Indiana counties, 2023)</p>
-
 Using the question above we could ask for the Pearson Correlation Coefficient.  The assistant responds with:
 
 1. Pearson correlation result (requested)
@@ -168,6 +147,19 @@ Using the question above we could ask for the Pearson Correlation Coefficient.  
 
 2. Interpretation
 This is a **strong positive** cross-county association in Indiana for 2023: counties with a **higher share of people below the poverty level** tend to have **higher age-adjusted diagnosed diabetes prevalence among adults** (CDC PLACES).
+
+### Usage Considerations
+
+AI analytic assistants are a new class of tools and should be used with the same care as any analytic software.
+
+The assistant uses a large language model (LLM) to orchestrate queries, statistical functions, and visualization tools. Like any LLM, it can misunderstand a request or select the wrong indicator if a prompt is ambiguous. To reduce this risk, the assistant is restricted to the configured data repositories and cannot search the Internet. It is also instructed to generate results only from sources rather than fabricate values.
+
+Many repositories contain indicators with similar names and descriptions. When possible, refer to indicators by their **indicator IDs** rather than by name. If you use names or descriptions, ask the assistant to state the source, indicator name, and indicator ID so you can verify that the correct indicator was selected.
+
+Each prompt should be self-contained. The assistant does not rely on information from previous prompts, so include the required place, time period, indicators, and analysis request in every query.
+
+When you are uncertain about a result, use the **Run Audit** button. The Audit LLM independently reviews the response, including the reasoning steps, selected indicators, and supporting evidence from the data sources.
+
 
 ### Conclusion
 Analysis of public SDoH data remains challenging because sources differ in definitions, geographic levels, identifiers, and reporting periods. Public repositories provide more integration, but projects still require joining repository data with measures from other sources and verifying geographic and temporal coverage in live samples. The Indiana example in this article is typical: finding suitable indicators and turning a research question into a joined table, a map, and a correlation required checking availability by county and year, reconciling a count with a rate, and interpreting populations that do not align perfectly.
