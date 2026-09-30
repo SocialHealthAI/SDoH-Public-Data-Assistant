@@ -1,9 +1,18 @@
 """
 SDoH Public Data Assistant - Main Streamlit Application
+
+Chat shell and viz rendering stay product-owned (charts/maps). LLM/audit cores
+come from sdoh_core. document_section_tool is not used.
 """
 import streamlit as st
 import os
-import re
+
+from sdoh_core.streamlit_app import (
+    escape_markdown,
+    logic_step_input,
+    logic_step_label,
+    logic_step_observation,
+)
 
 from chart_renderer import ChartRenderer
 from map_renderer import MapRenderer
@@ -19,37 +28,19 @@ if not datacommons_uri:
     st.error("No DATACOMMONS_URI found. Please set the DATACOMMONS_URI environment variable.")
     st.stop()
 
-# Initialize agent & agents
+# LLM_PROVIDER / LLM_MODEL / API keys are read by sdoh_core (openai or anthropic).
 agent = ReActAgent(
     mcp_uri=datacommons_uri,
-    model_name="gpt-5.2",
-    #model_name="gpt-5-mini",
-    max_iterations=10,
-    system_prompt_path="agent_system_prompt.txt"
+    max_iterations=16,
+    system_prompt_path="agent_system_prompt.txt",
 )
-audit_agent = AuditAgent(model_name="gpt-4o", temperature=0.0)
+audit_agent = AuditAgent(temperature=0.0)
 chart_renderer = ChartRenderer()
 map_renderer = MapRenderer()
 
 ##############################################################
 #   Streamlit App Logic
 ##############################################################
-
-def escape_markdown(text):
-    """Escape markdown special characters but preserve tables and intentional formatting."""
-    # Escape lines that are purely === or --- (common in statistical output)
-    text = re.sub(r'^(=+)$', r'\\\1', text, flags=re.MULTILINE)
-    text = re.sub(r'^(-+)$', r'\\\1', text, flags=re.MULTILINE)
-    
-    # Escape lines that start with *** or ___ (alternative horizontal rules)
-    text = re.sub(r'^(\*{3,})$', r'\\\1', text, flags=re.MULTILINE)
-    text = re.sub(r'^(_{3,})$', r'\\\1', text, flags=re.MULTILINE)
-    
-    # Escape # at start of lines (headers)
-    text = re.sub(r'^(#{1,6})\s', r'\\\1 ', text, flags=re.MULTILINE)
-    
-    return text
-
 
 st.title("🧠 SDoH Public Data Assistant")
 
@@ -66,7 +57,7 @@ if "show_steps" not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("Controls")
-    
+
     if st.button("Clear message history", use_container_width=True):
         st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you?"}]
         st.session_state["last_result"] = None
@@ -77,12 +68,11 @@ with st.sidebar:
     if st.session_state["last_result"] is not None:
         st.divider()
         st.subheader("Analysis Tools")
-        
-        # Toggle buttons
+
         if st.button("🧩 View Logic Steps", use_container_width=True):
             st.session_state["show_steps"] = not st.session_state["show_steps"]
             st.session_state["show_audit"] = False
-            
+
         if st.button("🔍 Run Audit", type="secondary", use_container_width=True):
             st.session_state["show_audit"] = True
             st.session_state["show_steps"] = False
@@ -95,11 +85,9 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # 2. PERSISTENT VISUALIZATION RENDERING
-# Only render if we're not showing steps or audit (which would interfere)
 last_result = st.session_state["last_result"]
 if last_result and (last_result.get("chart_code") or last_result.get("map_code")):
     if not st.session_state["show_steps"] and not st.session_state["show_audit"]:
-        explanation = last_result["result"].get("explanation")
         if last_result.get("map_code"):
             map_renderer.render_from_code(
                 last_result["map_code"],
@@ -116,11 +104,11 @@ if st.session_state["show_steps"] and st.session_state["last_result"]:
     st.divider()
     st.header("🧩 Logic Steps")
     steps = st.session_state["last_result"]["result"].get("intermediate_steps", [])
-    
-    for i, step in enumerate(steps):
-        with st.expander(f"Step {i+1}: {step[0].tool}", expanded=True):
-            st.markdown(f"**Action Input:** `{step[0].tool_input}`")
-            obs = str(step[1])
+
+    for i, step in enumerate(steps, start=1):
+        with st.expander(logic_step_label(step, i), expanded=True):
+            st.markdown(f"**Action Input:** `{logic_step_input(step)}`")
+            obs = logic_step_observation(step)
             if len(obs.splitlines()) > 5:
                 obs = "\n".join(obs.splitlines()[:5]) + "\n... (truncated)"
             st.code(obs)
@@ -132,14 +120,14 @@ if st.session_state["show_audit"] and st.session_state["last_result"]:
     with st.spinner("Conducting audit..."):
         try:
             st.subheader("🔍 Audit Report")
-            audit_report = audit_agent.audit(
+            audit_report = audit_agent.audit_turn(
                 tool_descriptions=last["tool_descriptions"],
                 user_prompt=last["prompt"],
                 intermediate_steps=last["result"].get("intermediate_steps", []),
-                final_answer=last["result"].get("output", "")
+                final_answer=last["result"].get("output", ""),
             )
             st.markdown(audit_report)
-            st.caption(f"*Audited by: {audit_agent.llm.model_name}*")
+            st.caption(f"*Audited by: {audit_agent.display_name()}*")
         except Exception as e:
             st.error(f"Audit failed: {e}")
 
@@ -151,12 +139,11 @@ if prompt:
     st.session_state["show_audit"] = False
     st.session_state["show_steps"] = False
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
+
     with st.spinner("Processing..."):
         try:
             result = agent.run(prompt)
 
-            # Capture the latest visualization code (chart or map) before rerunning
             chart_tool = agent.get_chart_tool()
             map_tool = agent.get_map_tool()
             saved_chart_code = None
@@ -178,10 +165,12 @@ if prompt:
                     if latest_result.get("geojson_ref"):
                         saved_map_geojson_ref = latest_result.get("geojson_ref")
                     if latest_result.get("outline_geojson_ref"):
-                        saved_map_outline_geojson_ref = latest_result.get("outline_geojson_ref")
+                        saved_map_outline_geojson_ref = latest_result.get(
+                            "outline_geojson_ref"
+                        )
                     if latest_result.get("data"):
                         saved_map_data = latest_result.get("data")
-            
+
             st.session_state["last_result"] = {
                 "prompt": prompt,
                 "result": result,
@@ -192,13 +181,15 @@ if prompt:
                 "map_outline_geojson_ref": saved_map_outline_geojson_ref,
                 "map_data": saved_map_data,
             }
-            
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "content": escape_markdown(result.get("output", ""))
-            })
+
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": escape_markdown(result.get("output", "")),
+                }
+            )
 
             st.rerun()
-            
+
         except Exception as e:
             st.error(f"Error: {e}")

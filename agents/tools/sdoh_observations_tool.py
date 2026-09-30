@@ -21,7 +21,7 @@ from tools.cdc_places_helpers import (
     place_key_from_location_id,
 )
 from tools.dc_place_expand import expand_places_for_parent_and_level, normalize_place_key
-from tools.dc_v2_helpers import dc_api_key, fetch_observations_by_entity_batch, fetch_property_values_map
+from tools.dc_v2_helpers import dc_api_key, fetch_observations_by_entity_batch, fetch_property_values_map, flatten_str_ids
 
 
 PlaceLevel = Literal[
@@ -57,7 +57,13 @@ class PlaceRequest(BaseModel):
 
 
 class TimeRequest(BaseModel):
-    year: Optional[int] = Field(default=None, description="Single year.")
+    year: Optional[int] = Field(
+        default=None,
+        description=(
+            "Single year. If CMS has no rows for this year, get_sdoh_observations "
+            "returns the latest available year plus a warning — do not retry other years."
+        ),
+    )
     years: Optional[List[int]] = Field(default=None, description="Multiple years.")
 
 
@@ -270,8 +276,13 @@ def _cms_pick_fields(sample_row: Dict[str, Any]) -> Tuple[Optional[str], Optiona
     )
     numeric_fields: List[str] = []
     for k in keys:
+        if year_field and k == year_field:
+            continue
         v = sample_row.get(k)
         if _safe_float(v) is not None:
+            nk = _norm_key_name(k)
+            if "chg" in nk or "change" in nk:
+                continue
             numeric_fields.append(k)
     for pref in preferred:
         for nk, orig in nkeys.items():
@@ -368,6 +379,14 @@ def _cms_place_key_from_row(
     return None
 
 
+def _cms_is_primary_breakout(row: Dict[str, Any]) -> bool:
+    """Keep Overall/Totals rows; skip Rural/Urban (and similar) breakouts for maps."""
+    breakout = _coalesce(row, ["Breakout", "breakout"])
+    if breakout is None:
+        return True
+    return str(breakout).strip().lower() == "overall"
+
+
 def _extract_dc_observations(raw: Any) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Best-effort extraction of Data Commons observations from datacommons-mcp `get_observations`.
@@ -412,7 +431,10 @@ class SdohObservationsTool(StructuredTool):
                 "Fetch observations for one or more SDoH indicators across sources. "
                 "Data Commons is fully implemented (batched v2 when DC_API_KEY set). "
                 "CMS is implemented for cms:<dataset_uuid> indicators via data.cms.gov "
-                "data-api (county/state geo mapping varies by dataset schema). "
+                "data-api (county/state/ZIP geo mapping varies by dataset schema). "
+                "If the requested year has no CMS rows, the latest available year is returned "
+                "with a warning — do not retry other years. Geography datasets that include "
+                "Rural/Urban breakouts return Overall rows only (one value per place). "
                 "CDC PLACES is implemented for cdcplaces:<geo_level>/<MeasureId>/<DataValueTypeID> "
                 "(county/place/zip/tract; datavaluetypeid AgeAdjPrv or CrdPrv; supports place.within via DC expansion). "
                 "Normalizes place_key and year; joins multiple indicators into wide format by default "
@@ -488,7 +510,7 @@ class SdohObservationsTool(StructuredTool):
             seen = set()
             years = [y for y in years if (y not in seen and not seen.add(y))]
 
-        raw_place_ids = [str(pid).strip() for pid in (place.ids or []) if str(pid).strip()]
+        raw_place_ids = flatten_str_ids(place.ids)
         user_supplied_place_ids = place.ids is not None and len(raw_place_ids) > 0
         if user_supplied_place_ids:
             place_ids = expand_places_for_parent_and_level(
@@ -635,6 +657,10 @@ class SdohObservationsTool(StructuredTool):
                     if lvl_place == "zip":
                         max_pages = 250  # up to 500k rows scanned for sparse ZIP extraction
                     zip_targets_hit: set = set()
+                    fallback_latest: Dict[str, Dict[str, Any]] = {}
+                    years_seen: set = set()
+                    requested_years = [yy for yy in years if yy is not None]
+                    indicator_row_start = len(rows)
 
                     for _ in range(max_pages):
                         try:
@@ -646,13 +672,12 @@ class SdohObservationsTool(StructuredTool):
                             break
 
                         for rec in page:
+                            if not _cms_is_primary_breakout(rec):
+                                continue
                             y = _normalize_year(rec.get(year_field))
                             if y is None:
                                 continue
-                            if years and years != [None]:
-                                # If caller provided explicit years, filter strictly.
-                                if y not in [yy for yy in years if yy is not None]:
-                                    continue
+                            years_seen.add(int(y))
 
                             pk = _cms_place_key_from_row(
                                 rec,
@@ -682,9 +707,10 @@ class SdohObservationsTool(StructuredTool):
                                 if "percent" in nk or nk.endswith("_pct") or nk.startswith("pct_"):
                                     unit = "%"
 
+                            geo_name = _coalesce(rec, ["Prscrbr_Geo_Desc", "prscrbr_geo_desc"])
                             row: Dict[str, Any] = {
                                 "place_key": pk,
-                                "place_name": None,
+                                "place_name": None if geo_name is None else str(geo_name),
                                 "place_level": place.level,
                                 "year": int(y),
                                 "indicator_id": indicator_id,
@@ -700,6 +726,14 @@ class SdohObservationsTool(StructuredTool):
                             if not out_cfg.include_place_columns:
                                 row.pop("place_name", None)
                                 row.pop("place_level", None)
+
+                            year_matches = (not requested_years) or (int(y) in requested_years)
+                            if not year_matches:
+                                prev = fallback_latest.get(pk)
+                                if prev is None or int(y) > int(prev["year"]):
+                                    fallback_latest[pk] = row
+                                continue
+
                             rows.append(row)
                             if requested_zip_codes and pk.startswith("zip/"):
                                 zip_targets_hit.add(pk.split("/", 1)[1])
@@ -707,6 +741,28 @@ class SdohObservationsTool(StructuredTool):
                         offset += page_size
                         if requested_zip_codes and requested_zip_codes.issubset(zip_targets_hit):
                             break
+
+                    n_added = len(rows) - indicator_row_start
+                    if n_added == 0 and requested_years and fallback_latest:
+                        latest = max(int(r["year"]) for r in fallback_latest.values())
+                        warnings.append(
+                            f"No CMS rows for year(s) {requested_years} in dataset {dataset_uuid}; "
+                            f"using latest available year {latest} ({len(fallback_latest)} places). "
+                            f"Years seen at this geography: {sorted(years_seen)}."
+                        )
+                        rows.extend(fallback_latest.values())
+                        if requested_zip_codes:
+                            zip_targets_hit.update(
+                                pk.split("/", 1)[1]
+                                for pk in fallback_latest
+                                if pk.startswith("zip/")
+                            )
+                    elif n_added == 0 and requested_years:
+                        seen_txt = sorted(years_seen) if years_seen else "none"
+                        warnings.append(
+                            f"No CMS rows for year(s) {requested_years} in dataset {dataset_uuid}. "
+                            f"Years seen at this geography: {seen_txt}."
+                        )
 
                     if lvl_place == "zip" and requested_zip_codes and not requested_zip_codes.issubset(zip_targets_hit):
                         missing = sorted(requested_zip_codes - zip_targets_hit)

@@ -90,7 +90,7 @@ Purpose: Generates GeoPandas/matplotlib code to render geographic maps (e.g., ch
 When to use:
 - Use this when a user asks for a "map", "choropleth", or "geographic visualization" of the data.
 Figure size:
-- Generated map code MUST use plt.subplots with figsize at least (6, 4) in inches (width, height), unless the user explicitly asks for a different size.
+- Generated map code MUST use plt.subplots with figsize at least (12, 7) in inches (width, height), unless the user explicitly asks for a different size. Default is (12, 7) so US choropleths are readable.
 Input Requirements:
 - data: Structured numeric data. IMPORTANT: To avoid misalignment bugs, ALWAYS pass map data as row pairs using the rows/columns form:
   - data={"columns":["dcid","value"], "rows":[["geoId/18001", 10.2], ["geoId/18003", 9.8], ...]} for counties; use **zip/45202** (not geoId/45202) for ZCTA/ZIP maps.
@@ -107,8 +107,10 @@ Input Requirements:
   3. If the user asks for a parent outline (e.g. county boundary around cities), call
      get_geojson_for_places again with the parent place DCID(s) and capture that `geojson_ref`
      as the outline reference.
-  4. Immediately call generate_map and pass the primary reference as `geojson_ref`, and
-     pass the outline reference as `outline_geojson_ref` when applicable. Do NOT pass full GeoJSON to generate_map.
+  4. Immediately call generate_map as the next tool call. Pass the primary reference as
+     `geojson_ref`, and the outline reference as `outline_geojson_ref` when applicable.
+     Do NOT pass full GeoJSON to generate_map. After you have observation rows and a
+     `geojson_ref`, do not call search, observations, or resolve_places again.
   Example tool call structure (conceptual):
   - get_geojson_for_places(place_dcids=[...])  # primary regions (same as data keys)
   - get_geojson_for_places(place_dcids=[...])  # optional: parent outline only
@@ -167,6 +169,12 @@ For analysis queries:
     - For forecasting: Pass the table and target column to time_series_forecast. You MUST use the tool; DO NOT attempt to predict future values internally.
     - For charts: If a user asks to "show a chart", call generate_chart with structured data or a chart description. "Show chart" means *generate code* (matplotlib code) — do NOT render or embed images or base64 data URIs.
 4. [cite_start]Present: Report the statistical findings and provide a plain-English summary of what the numbers mean. [cite: 43]
+
+For map queries:
+1. Search once, then call get_sdoh_observations once with place.level (and within or ids) and time.year.
+2. If observations return rows plus a CMS year-fallback warning, use that year and say so. Do not retry other years.
+3. If observations are empty, read `warnings` (available years). Retry get_sdoh_observations at most once with a listed year, then proceed or tell the user the data is unavailable.
+4. Call get_geojson_for_places, then immediately generate_map. Do not spend remaining steps re-fetching observations.
 
 === IMPORTANT NOTES ===
 

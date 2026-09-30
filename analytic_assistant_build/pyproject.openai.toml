@@ -21,16 +21,20 @@ docarray = "^0.38.0"
 langchain-experimental = "0.3.4"  
 langchain-community = "^0.3.19"        # or latest
 langchain-openai = "^0.3.19"            # or latest
+langchain-anthropic = "^0.3.0"
 langchainhub = "^0.1.21"               # or latest
 langchain-tavily = "^0.1.0"   
 langchain-groq = "^0.3.7"
 langchain-mcp-adapters = "^0.1.9"
+# Official MCP SDK 1.x — adapters 0.1.x import mcp.shared.session (removed in mcp 2).
+mcp = ">=1.24.0,<2.0.0"
+# Shared LLM/loop/audit cores — GitHub only (no local path). Pin a tag when Core publishes one.
+sdoh-core = { git = "https://github.com/SocialHealthAI/SDoH-Core-Assistant.git", branch = "main" }
 tavily-python = "^0.3.0"      # Direct Tavily API client (latest stable)
 numexpr = "^2.8.8"
 langchain-google-genai = "^2.1.0"
 matplotlib = "^3.9.0"
 psycopg2-binary = "~=2.9"
-fastmcp=">=0.2.0"
 cryptography = "<42"
 faiss-cpu = "^1.8.2"
 tiktoken = ">=0.4.0"

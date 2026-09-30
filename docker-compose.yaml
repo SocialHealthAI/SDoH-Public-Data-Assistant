@@ -14,7 +14,7 @@ services:
     volumes:
       - ./agents/:/myapps:rw
       - ./tests:/app/tests:ro
-      # - ./dictionary_data:/workspace/data
+      # Do not bind-mount a local Core checkout. sdoh-core is installed from GitHub at image build.
     working_dir: /myapps
     ports:
       - "${ASSISTANT_BIND:-127.0.0.1}:${ASSISTANT_HOST_PORT:-8052}:${ASSISTANT_CONTAINER_PORT:-8052}"
@@ -22,8 +22,11 @@ services:
       - DATACOMMONS_URI=${DATACOMMONS_URI}
       - STREAMLIT_SERVER_ADDRESS=${STREAMLIT_SERVER_ADDRESS:-0.0.0.0}
       - STREAMLIT_SERVER_PORT=${ASSISTANT_CONTAINER_PORT:-8052}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - DC_API_KEY=${DC_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL:-}
       
     command: ["/opt/venv/bin/streamlit", "run", "streamlit_assistant.py", "--server.port", "${STREAMLIT_SERVER_PORT}", "--server.address", "${STREAMLIT_SERVER_ADDRESS}"]
     

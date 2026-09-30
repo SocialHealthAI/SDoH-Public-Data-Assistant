@@ -1,0 +1,20 @@
+---
+description: Keep user-facing docs in documentation/ in sync with install, architecture, and usage changes
+alwaysApply: true
+---
+
+# Documentation maintenance
+
+When a change affects how the assistant is installed, how it is built, or how someone uses it, update the matching file in `documentation/` in the same change.
+
+| Change | Update |
+|---|---|
+| Setup, env vars, ports, Docker services, how to run | `documentation/installation.md` |
+| Services, tools, data sources, request flow | `documentation/architecture.md` |
+| Prompts, visible behavior, connected sources, examples | `documentation/usage.md` |
+
+Also update `README.md` when a link, port, or one-line description of those docs becomes wrong.
+
+Leave these docs unchanged when the change is internal and nothing user-facing or architectural moved: `documentation internal/`, `documentation/AI Assistants article.md`, `documentation/AI Assistants article html.md`. Feature specs under `specs/` stay with the SDD workflow (`/evolve`).
+
+Example: adding a tool that reads a new public dataset means updating `architecture.md` (where the tool sits) and `usage.md` (how to prompt for that source). A private refactor of an existing helper, with the same behavior, does not require a doc edit.

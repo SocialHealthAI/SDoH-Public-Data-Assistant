@@ -25,7 +25,7 @@ The agent discovers indicators with `search_sdoh_indicators`, fetches values wit
 - **Name the geography and year** — e.g. “Indiana counties, 2021” or “Ohio, 2023”.
 - **Ask for sources when exploring** — e.g. “include repository and indicator_id”.
 - **For PLACES HRSN topics** (loneliness, food insecurity, housing insecurity) — mention `cdcplaces` or use wording the agent maps to PLACES; prefer age-adjusted prevalence when comparing counties.
-- **For maps** — specify level (`county`, `zip`, `tract`, `state`) and place ids or a parent state/county. ZIP maps use `zip/#####` place keys, not `geoId/#####`.
+- **For maps** — specify level (`county`, `zip`, `tract`, `state`) and place ids or a parent state/county. ZIP maps use `zip/#####` place keys, not `geoId/#####`. National US maps crop to the contiguous states so Alaska’s Aleutian islands (across the date line) do not shrink the country.
 - **Keep result sets focused** — very large county-by-county tables increase token use and can hit model rate limits. Filter to a state, limit years, or ask for top-*N* counties instead of all places nationwide.
 
 Example (focused request):
@@ -43,3 +43,7 @@ List every county in the US with all CDC PLACES measures for all years.
 ### CMS notes
 
 Many CMS metrics describe the **Medicare population (65+)**. When comparing CMS series to Data Commons or PLACES, prefer age-adjusted or clearly labeled measures and note population differences in your interpretation.
+
+CMS geography datasets (for example Medicare Part D opioid prescribing rates) often publish **only the latest year** in the current catalog snapshot. Asking for an older year (such as 2023) still returns a map when later data exists; the assistant substitutes the latest available year and should say so. Rural/Urban breakouts are dropped so each state or county has one Overall rate.
+
+**Map example:** “Show a map for states in the US for Medicare Part D Opioid Prescribing Rates - by Geography for year 2023.”

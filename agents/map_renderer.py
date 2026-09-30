@@ -7,6 +7,7 @@ import re
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as patheffects
+import numpy as np
 import streamlit as st
 
 try:
@@ -22,6 +23,140 @@ except Exception:  # pandas is optional at runtime
 
 class MapRenderer:
     """Handles map rendering from generated code."""
+
+    MIN_FIGSIZE_INCHES = (12.0, 7.0)
+
+    @staticmethod
+    def _ensure_min_figsize(fig) -> None:
+        """Enlarge undersized LLM figures so choropleths remain readable."""
+        min_w, min_h = MapRenderer.MIN_FIGSIZE_INCHES
+        w, h = fig.get_size_inches()
+        if w < min_w or h < min_h:
+            fig.set_size_inches(max(w, min_w), max(h, min_h), forward=True)
+
+    @staticmethod
+    def _primary_geodataframe(ns: dict):
+        if gpd is None:
+            return None
+        for key in ("merged", "gdf"):
+            obj = ns.get(key)
+            if obj is not None and hasattr(obj, "geometry") and hasattr(obj, "total_bounds"):
+                if getattr(obj, "empty", False) or len(obj) == 0:
+                    continue
+                return obj
+        return None
+
+    @staticmethod
+    def _tight_geometry_bounds(gdf):
+        """
+        Bounds of the main geometry cluster, ignoring far outliers.
+
+        Data Commons state GeoJSON already insets Alaska/Hawaii beside the
+        lower 48. A single stray coordinate (or true-geographic territory)
+        still expands matplotlib's axes so the country looks tiny.
+        """
+        try:
+            valid = gdf.geometry.notna() & ~gdf.geometry.is_empty
+            g = gdf.loc[valid]
+            if g.empty:
+                return None
+            pts = g.geometry.representative_point()
+            xs = np.asarray(pts.x, dtype=float)
+            ys = np.asarray(pts.y, dtype=float)
+        except Exception:
+            return None
+        ok = np.isfinite(xs) & np.isfinite(ys)
+        if int(ok.sum()) < 1:
+            return None
+        xs, ys = xs[ok], ys[ok]
+        g = g.iloc[np.flatnonzero(ok)]
+        if float(np.nanmax(np.abs(xs))) <= 180 and float(np.nanmax(np.abs(ys))) <= 90:
+            conus = (xs >= -125.0) & (xs <= -66.0) & (ys >= 24.0) & (ys <= 50.0)
+            if int(conus.sum()) >= 8:
+                try:
+                    minx, miny, maxx, maxy = g.iloc[np.flatnonzero(conus)].total_bounds
+                except Exception:
+                    minx = None
+                if minx is not None and maxx > minx and maxy > miny:
+                    pad_x = max((maxx - minx) * 0.05, 0.4)
+                    pad_y = max((maxy - miny) * 0.05, 0.3)
+                    return (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
+        mx, my = float(np.median(xs)), float(np.median(ys))
+        dist = np.sqrt((xs - mx) ** 2 + (ys - my) ** 2)
+        order = np.argsort(dist)
+        core_n = max(3, int(np.ceil(0.7 * len(dist))))
+        core = g.iloc[order[:core_n]]
+        try:
+            cminx, cminy, cmaxx, cmaxy = core.total_bounds
+        except Exception:
+            return None
+        wx, wy = max(cmaxx - cminx, 1e-6), max(cmaxy - cminy, 1e-6)
+        # Keep nearby insets (DC moves AK/HI beside CONUS) but drop far outliers.
+        exp = (cminx - wx, cminy - wy, cmaxx + wx, cmaxy + wy)
+        keep = (xs >= exp[0]) & (xs <= exp[2]) & (ys >= exp[1]) & (ys <= exp[3])
+        try:
+            minx, miny, maxx, maxy = g.iloc[np.flatnonzero(keep)].total_bounds
+        except Exception:
+            return None
+        if not all(np.isfinite([minx, miny, maxx, maxy])) or maxx <= minx or maxy <= miny:
+            return None
+        pad_x = max((maxx - minx) * 0.05, (maxx - minx) * 0.01 + 1e-6)
+        pad_y = max((maxy - miny) * 0.05, (maxy - miny) * 0.01 + 1e-6)
+        return (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
+
+    @staticmethod
+    def _is_map_axis(ax, bounds) -> bool:
+        """True when this axes is showing the choropleth, not a colorbar."""
+        minx, miny, maxx, maxy = bounds
+        x0, x1 = ax.get_xlim()
+        y0, y1 = ax.get_ylim()
+        if x1 < minx or x0 > maxx or y1 < miny or y0 > maxy:
+            return False
+        # Colorbar value ranges are tiny compared with geographic/projected extents.
+        span = abs(x1 - x0)
+        data_span = abs(maxx - minx)
+        return span >= data_span * 0.25
+
+    @staticmethod
+    def _fit_map_view(fig, ns: dict) -> bool:
+        """Crop map axes to the main geometry cluster and lock equal aspect to the box."""
+        gdf = MapRenderer._primary_geodataframe(ns)
+        if gdf is None:
+            return False
+        bounds = MapRenderer._tight_geometry_bounds(gdf)
+        if bounds is None:
+            return False
+        minx, miny, maxx, maxy = bounds
+        fitted = False
+        for ax in fig.get_axes():
+            if not MapRenderer._is_map_axis(ax, bounds):
+                continue
+            ax.set_xlim(minx, maxx)
+            ax.set_ylim(miny, maxy)
+            ax.set_aspect("equal", adjustable="box")
+            fitted = True
+        return fitted
+
+    @staticmethod
+    def _display_figure(fig) -> None:
+        """Crop whitespace and show a PNG. st.pyplot keeps empty axes from equal-aspect + stretch."""
+        buf = io.BytesIO()
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=160,
+            bbox_inches="tight",
+            pad_inches=0.2,
+            facecolor="white",
+        )
+        buf.seek(0)
+        try:
+            st.image(buf, width="stretch")
+        except TypeError:
+            try:
+                st.image(buf, use_container_width=True)
+            except TypeError:
+                st.image(buf)
 
     @staticmethod
     def _strip_problematic_geojson_assignments(code: str) -> str:
@@ -134,7 +269,6 @@ class MapRenderer:
                 print("[MapRenderer DEBUG] Executing sanitized map code:\n", clean_code)
             except Exception:
                 pass
-            st.code(clean_code, language="python")
 
             # 3. Very small safety filter (MapTool should already enforce this)
             forbidden_snippets = ["import os", "import sys", "import subprocess", "eval(", "exec(", "open("]
@@ -202,10 +336,16 @@ class MapRenderer:
                 fig = plt.gcf()
 
             if fig and fig.get_axes():
-                st.pyplot(fig)
+                self._ensure_min_figsize(fig)
+                self._fit_map_view(fig, exec_globals)
+                self._display_figure(fig)
                 plt.close(fig)
+                with st.expander("Map code", expanded=False):
+                    st.code(clean_code, language="python")
             else:
                 st.warning("No map figure was detected in the generated code.")
+                with st.expander("Map code", expanded=True):
+                    st.code(clean_code, language="python")
 
         except Exception as e:
             st.error(f"Error running map code: {e}")

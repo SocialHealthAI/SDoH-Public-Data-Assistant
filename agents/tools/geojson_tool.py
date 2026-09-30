@@ -5,7 +5,58 @@ import json
 from langchain.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from tools.dc_v2_helpers import dc_api_key, fetch_property_values_map
+from tools.dc_v2_helpers import dc_api_key, fetch_property_values_map, flatten_str_ids
+
+
+def unwrap_antimeridian_geometry(geom: Any) -> Any:
+    """
+    Shift rings that jump the antimeridian (Alaska Aleutians at +179)
+    so matplotlib does not treat the layer as a world-wide extent.
+    """
+    if not isinstance(geom, dict):
+        return geom
+    gtype = geom.get("type")
+    coords = geom.get("coordinates")
+    if gtype == "Polygon" and isinstance(coords, list):
+        return {**geom, "coordinates": [_unwrap_ring(ring) for ring in coords]}
+    if gtype == "MultiPolygon" and isinstance(coords, list):
+        return {
+            **geom,
+            "coordinates": [
+                [_unwrap_ring(ring) for ring in poly] if isinstance(poly, list) else poly
+                for poly in coords
+            ],
+        }
+    return geom
+
+
+def _unwrap_ring(ring: Any) -> Any:
+    if not isinstance(ring, list) or not ring:
+        return ring
+    xs = []
+    for p in ring:
+        if isinstance(p, (list, tuple)) and p:
+            try:
+                xs.append(float(p[0]))
+            except (TypeError, ValueError):
+                continue
+    if len(xs) < 2 or (max(xs) - min(xs) <= 180):
+        return ring
+    out = []
+    for p in ring:
+        if isinstance(p, (list, tuple)) and p:
+            try:
+                x = float(p[0])
+            except (TypeError, ValueError):
+                out.append(p)
+                continue
+            if x > 0:
+                out.append([x - 360.0, *list(p[1:])])
+            else:
+                out.append(list(p))
+        else:
+            out.append(p)
+    return out
 
 try:
     import streamlit as st  # type: ignore
@@ -51,6 +102,7 @@ class GeoJsonTool(StructuredTool):
         )
 
     def _run(self, place_dcids: List[str]) -> Dict[str, Any]:
+        place_dcids = flatten_str_ids(place_dcids)
         if not dc_api_key():
             return {
                 "geojson_ref": None,
@@ -78,6 +130,7 @@ class GeoJsonTool(StructuredTool):
                         continue
                 else:
                     geom_obj = geom
+                geom_obj = unwrap_antimeridian_geometry(geom_obj)
 
                 # Normalized ID for robust merge: strip "geoId/" so "geoId/39035" and "39035" match
                 dcid_str = str(dcid).strip()

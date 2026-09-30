@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
+from tools.dc_v2_helpers import flatten_str_ids
+
 _US_STATE_TO_FIPS: Dict[str, str] = {
     "alabama": "01",
     "alaska": "02",
@@ -309,7 +311,7 @@ def expand_places_for_parent_and_level(
     - Else if within is set, resolve parent then list children of `level` under that parent via v2 API.
     - For city level under a US county parent, if direct children are empty, fall back to descendants_type City.
     """
-    ids_in = [str(x).strip() for x in (explicit_ids or []) if str(x).strip()]
+    ids_in = flatten_str_ids(explicit_ids)
     if ids_in:
         out: List[str] = []
         for pid in ids_in:

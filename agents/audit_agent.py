@@ -1,27 +1,14 @@
 """
-Audit Agent for reviewing ReAct Agent responses
+Product audit prompt for the Public Data Assistant.
+
+Uses sdoh_core.AuditAgent for the LLM call; this module owns the review criteria.
 """
-from typing import Dict, Any, List
-from langchain_openai import ChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from typing import List
 
+from sdoh_core.audit_agent import AuditAgent as CoreAuditAgent
+from sdoh_core.llm_config import llm_content_to_text
 
-class AuditAgent:
-    """
-    Audit agent that reviews the ReAct agent's reasoning process and output.
-    Uses a different LLM to provide independent verification.
-    """
-    
-    def __init__(self, model_name: str = "gpt-4o", temperature: float = 0.2):
-        """
-        Initialize the Audit Agent.
-        
-        Args:
-            model_name: OpenAI model name
-            temperature: LLM temperature setting
-        """
-        self.llm = ChatOpenAI(model=model_name, temperature=temperature)
-        self.system_prompt = """You are an audit agent tasked with reviewing the reasoning and output of a data analytics AI assistant.
+AUDIT_SYSTEM_PROMPT = """You are an audit agent tasked with reviewing the reasoning and output of a data analytics AI assistant.
 
 Your responsibilities:
 1. Verify logical consistency in the reasoning steps
@@ -36,44 +23,53 @@ Provide a structured audit report with:
 - **Recommendations**: Suggestions for improvement, including improvements to user request.
 
 Be constructive, specific, and focus on substantive issues rather than minor stylistic preferences."""
-    
-    def audit(self, user_prompt: str, tool_descriptions: str, intermediate_steps: List, final_answer: str) -> str:
-        """
-        Conduct an audit of the agent's response.
-        
-        Args:
-            user_prompt: The original user request
-            tool_descriptions: Text description of available tools
-            intermediate_steps: The reasoning steps taken
-            final_answer: The final response generated
-            
-        Returns:
-            Audit report as string
-        """
-        # Format steps
-        steps_desc = "\n".join([
-            f"**Step {i}:**\n- Tool: {step[0].tool}\n- Input: {step[0].tool_input}\n- Observation: {step[1]}\n"
+
+
+def format_tool_steps_for_audit(
+    tool_descriptions: str, intermediate_steps: List
+) -> str:
+    """Flatten tool catalog + intermediate steps for Core AuditAgent.conversation."""
+    steps_desc = "\n".join(
+        [
+            f"**Step {i}:**\n- Tool: {step[0].tool}\n"
+            f"- Input: {step[0].tool_input}\n"
+            f"- Observation: {llm_content_to_text(step[1])}\n"
             for i, step in enumerate(intermediate_steps, 1)
-        ])
-        
-        audit_context = f"""The answering agent had access to the following tools:
-
-{tool_descriptions}
-
-**USER REQUEST:**
-{user_prompt}
-
-**INTERMEDIATE REASONING STEPS:**
-{steps_desc}
-
-**FINAL ANSWER:**
-{final_answer}
-"""
-        
-        messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=f"Please audit the following agent interaction:\n\n{audit_context}")
         ]
-        
-        response = self.llm.invoke(messages)
-        return response.content
+    )
+    return (
+        "The answering agent had access to the following tools:\n\n"
+        f"{tool_descriptions}\n\n"
+        "**INTERMEDIATE REASONING STEPS:**\n"
+        f"{steps_desc}"
+    )
+
+
+class AuditAgent(CoreAuditAgent):
+    """Public-data audit agent with a fixed product system prompt."""
+
+    def __init__(
+        self,
+        model_name: str | None = None,
+        provider: str | None = None,
+        temperature: float = 0.2,
+    ) -> None:
+        super().__init__(
+            AUDIT_SYSTEM_PROMPT,
+            model_name=model_name,
+            provider=provider,
+            temperature=temperature,
+        )
+
+    def audit_turn(
+        self,
+        user_prompt: str,
+        tool_descriptions: str,
+        intermediate_steps: List,
+        final_answer: str,
+    ) -> str:
+        """Audit a public-data turn (tools + steps + final answer)."""
+        conversation = format_tool_steps_for_audit(
+            tool_descriptions, intermediate_steps
+        )
+        return self.audit(user_prompt, conversation, final_answer)

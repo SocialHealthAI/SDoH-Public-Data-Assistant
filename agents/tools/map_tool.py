@@ -6,6 +6,8 @@ from langchain.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain.prompts import PromptTemplate
 from langchain.schema import HumanMessage
+from sdoh_core.llm_config import llm_content_to_text
+from tools.dc_v2_helpers import flatten_str_ids
 
 
 class MapToolInput(BaseModel):
@@ -85,7 +87,7 @@ class MapTool(BaseTool):
         "(2) geojson_ref for the primary choropleth geometry (from get_geojson_for_places), "
         "and optionally (3) outline_geojson_ref for a higher-level outline from a second "
         "get_geojson_for_places call. "
-        "Use figsize at least (6, 4) inches unless the user specifies otherwise."
+        "Use figsize at least (12, 7) inches unless the user specifies otherwise."
     )
     args_schema: ClassVar[Type[BaseModel]] = MapToolInput
 
@@ -180,11 +182,13 @@ class MapTool(BaseTool):
             - Use "merged" (not gdf) for the choropleth plot so every geometry gets the correct value.
 
             Figure size (matplotlib inches, width then height):
-            - Always use plt.subplots with figsize at least (6, 4). Default to figsize=(6, 4) unless the user explicitly requests a different size.
+            - Default to figsize=(12, 7) so US state/county choropleths are readable in the chat pane.
+            - Always use plt.subplots with figsize at least (12, 7) unless the user explicitly requests a different size.
+            - Do not shrink the colorbar with legend_kwds shrink below 0.8.
 
             Create the figure explicitly:
 
-            fig, ax = plt.subplots(figsize=(6, 4))
+            fig, ax = plt.subplots(figsize=(12, 7))
 
             Plot the choropleth using GeoPandas:
 
@@ -386,6 +390,13 @@ class MapTool(BaseTool):
         """
 
         parsed_data: Optional[Dict[str, List]] = None
+        user_input = llm_content_to_text(user_input)
+        if isinstance(geojson_ref, (list, tuple)):
+            refs = flatten_str_ids(geojson_ref)
+            geojson_ref = refs[0] if refs else None
+        if isinstance(outline_geojson_ref, (list, tuple)):
+            refs = flatten_str_ids(outline_geojson_ref)
+            outline_geojson_ref = refs[0] if refs else None
         if data:
             parsed_data = self._normalize_data(data)
 
@@ -467,7 +478,7 @@ You may construct a pandas or GeoPandas object from this data to join with the G
         )
 
         response_msg = self.llm.invoke([HumanMessage(content=query)])
-        response = response_msg.content.strip()
+        response = llm_content_to_text(getattr(response_msg, "content", "")).strip()
 
         response = re.sub(
             r"!\[.*?\]\(\s*data:image/[a-zA-Z0-9]+;base64,[A-Za-z0-9+/=\n\r]+\s*\)",

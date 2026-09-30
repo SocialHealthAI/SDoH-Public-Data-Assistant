@@ -12,7 +12,7 @@ CMS and CDC PLACES data are accessed over the public internet from the assistant
 Before getting started, ensure you have the following:
 
 - Docker Engine and the Docker Compose plugin
-- Git (for cloning this repository)
+- Git (for cloning this repository). A **local image build** also uses Git inside Docker to fetch [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) from GitHub.
 - At least 8 GB of RAM and 10 GB of free disk space
 
 Platform install guides:
@@ -34,10 +34,51 @@ Required variables:
 
 | Variable                     | Purpose                                                                                                                                        |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`             | Powers the reasoning and audit LLMs                                                                                                            |
+| `OPENAI_API_KEY`             | Required when `LLM_PROVIDER=openai` (default). Powers the reasoning and audit LLMs.                                                            |
+| `ANTHROPIC_API_KEY`          | Required when `LLM_PROVIDER=anthropic`. Same chat and audit path as OpenAI; see **Use Anthropic (Claude)** below.                              |
 | `DC_API_KEY`                 | Data Commons API key for batched observations, place expansion, and map boundaries. See [Data Commons API](https://docs.datacommons.org/api/). |
 | `DATACOMMONS_URI`            | MCP endpoint for the assistant container. Use `http://data-commons-mcp:3000/mcp` with the default compose setup.                               |
 | `DATACOMMONS_CONTAINER_PORT` | Port for the MCP server (default `3000`). Must match the port in `DATACOMMONS_URI`.                                                            |
+
+
+LLM selection (`sdoh_core` reads these; Compose passes them into `public-data-assistant`):
+
+
+| Variable            | Purpose                                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLM_PROVIDER`      | `openai` (default) or `anthropic` (`claude` is accepted as an alias for Anthropic).                                                               |
+| `LLM_MODEL`         | Optional override. Empty uses Core defaults: `gpt-5.2` (OpenAI) or `claude-sonnet-5` (Anthropic).                                                 |
+| `ANTHROPIC_API_KEY` | Required when `LLM_PROVIDER=anthropic`. Create a key in the [Anthropic Console](https://console.anthropic.com/).                                  |
+
+
+###### Use Anthropic (Claude)
+
+The default stack is OpenAI. To run the assistant and the audit pass on Claude instead:
+
+1. Create an API key in the [Anthropic Console](https://console.anthropic.com/).
+2. In `.env`, comment the OpenAI provider lines and set Anthropic (this matches the commented block in `.env.example`):
+
+```env
+# OPENAI_API_KEY=
+# LLM_PROVIDER=openai
+# LLM_MODEL=
+
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-5
+ANTHROPIC_API_KEY=your-anthropic-key
+```
+
+Leave `OPENAI_API_KEY` unset or commented; it is not used when the provider is Anthropic. You can omit `LLM_MODEL` to get Core’s default (`claude-sonnet-5`), or set another Claude model id that `langchain-anthropic` accepts.
+
+3. Recreate the assistant container so it picks up the new env vars:
+
+```
+docker compose up -d public-data-assistant
+```
+
+If the container was already running, `docker compose up -d` recreates it when `.env` changes. Both the chat agent and **Run Audit** use the same `LLM_PROVIDER` / `LLM_MODEL`.
+
+To switch back to OpenAI, restore `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and comment or remove the Anthropic block, then recreate the container again.
 
 
 Optional:
@@ -59,7 +100,7 @@ You can run the stack in two ways. Both are configured in `.env` by setting `ASS
 
 | Mode            | When to use                                                                     | Image tags in `.env`                                                                  |
 | --------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Local build** | Developing this repo, changing Dockerfiles, requirements, or working offline    | `public-data-assistant:local`, `data-commons-mcp:local`                               |
+| **Local build** | Developing this repo or changing Dockerfiles. The assistant image build needs network access to GitHub to install `sdoh-core`. | `public-data-assistant:local`, `data-commons-mcp:local` |
 | **Docker Hub**  | Quick start without building, or running a published release on another machine | `jeffgunderson/public-data-assistant:latest`, `jeffgunderson/data-commons-mcp:latest` |
 
 

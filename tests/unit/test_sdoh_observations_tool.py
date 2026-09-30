@@ -220,3 +220,66 @@ def test_cdcplaces_county_observations(mock_fetch, _mock_dataset):
     assert rows[0]["year"] == 2023
     assert rows[0]["value"] == 14.2
     assert rows[0]["source"] == "cdcplaces"
+
+
+def _opioid_geo_row(*, geo_cd: str, name: str, breakout: str, year: int, rate: float) -> dict:
+    return {
+        "Year": year,
+        "Prscrbr_Geo_Lvl": "State",
+        "Prscrbr_Geo_Cd": geo_cd,
+        "Prscrbr_Geo_Desc": name,
+        "Breakout": breakout,
+        "Opioid_Prscrbng_Rate": rate,
+        "Opioid_Prscrbng_Rate_1Y_Chg": 0.1,
+    }
+
+
+@patch("tools.sdoh_observations_tool._cms_fetch_rows")
+def test_cms_year_fallback_and_overall_breakout(mock_cms_fetch):
+    page = [
+        _opioid_geo_row(geo_cd="06", name="California", breakout="Overall", year=2024, rate=3.29),
+        _opioid_geo_row(geo_cd="06", name="California", breakout="Rural", year=2024, rate=4.49),
+        _opioid_geo_row(geo_cd="06", name="California", breakout="Urban", year=2024, rate=3.24),
+        _opioid_geo_row(geo_cd="48", name="Texas", breakout="Overall", year=2024, rate=3.62),
+        _opioid_geo_row(geo_cd="48", name="Texas", breakout="Rural", year=2024, rate=3.33),
+    ]
+    mock_cms_fetch.side_effect = lambda dataset_uuid, offset=0, size=500: _cms_page(
+        page, offset=offset, size=size
+    )
+    tool = _make_obs_tool()
+    out = tool._run(
+        indicators=[f"cms:{CMS_DATASET_UUID}"],
+        place=PlaceRequest(level="state", ids=["geoId/06", "geoId/48"]),
+        time=TimeRequest(year=2023),
+        sources=["cms"],
+    )
+    rows = _observation_rows(out)
+    assert {(r["place_key"], r["year"], r["value"]) for r in rows} == {
+        ("geoId/06", 2024, 3.29),
+        ("geoId/48", 2024, 3.62),
+    }
+    assert {r["place_name"] for r in rows} == {"California", "Texas"}
+    assert any("latest available year 2024" in w for w in out["warnings"])
+
+
+@patch("tools.sdoh_observations_tool._cms_fetch_rows")
+def test_cms_requested_year_keeps_overall_only(mock_cms_fetch):
+    page = [
+        _opioid_geo_row(geo_cd="06", name="California", breakout="Overall", year=2024, rate=3.29),
+        _opioid_geo_row(geo_cd="06", name="California", breakout="Rural", year=2024, rate=4.49),
+    ]
+    mock_cms_fetch.side_effect = lambda dataset_uuid, offset=0, size=500: _cms_page(
+        page, offset=offset, size=size
+    )
+    tool = _make_obs_tool()
+    out = tool._run(
+        indicators=[f"cms:{CMS_DATASET_UUID}"],
+        place=PlaceRequest(level="state", ids=["geoId/06"]),
+        time=TimeRequest(year=2024),
+        sources=["cms"],
+    )
+    rows = _observation_rows(out)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 3.29
+    assert rows[0]["place_name"] == "California"
+    assert not any("latest available year" in w for w in out["warnings"])

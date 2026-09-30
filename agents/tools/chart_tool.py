@@ -4,6 +4,7 @@ from langchain.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain.prompts import PromptTemplate
 from langchain.schema import HumanMessage
+from sdoh_core.llm_config import llm_content_to_text
 from langchain.tools import Tool
 import re
 import json
@@ -236,6 +237,7 @@ class ChartTool(BaseTool):
         """
         parsed_data = None
         warnings: List[str] = []
+        user_input = llm_content_to_text(user_input)
 
         # 1) Prefer structured `data`
         if data:
@@ -280,7 +282,7 @@ The variable names match the column/key names from the input data.
         )
 
         response_msg = self.llm.invoke([HumanMessage(content=query)])
-        response = response_msg.content.strip()
+        response = llm_content_to_text(getattr(response_msg, "content", "")).strip()
 
         # Defensive strip: remove embedded images
         response = re.sub(r"!\[.*?\]\(\s*data:image/[a-zA-Z0-9]+;base64,[A-Za-z0-9+/=\n\r]+\s*\)",

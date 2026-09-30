@@ -16,6 +16,21 @@ def dc_api_key() -> Optional[str]:
     return os.environ.get("DC_API_KEY") or os.environ.get("DATACOMMONS_API_KEY")
 
 
+def flatten_str_ids(values: Any) -> List[str]:
+    """Flatten nested lists/tuples of identifiers into non-empty strings."""
+    out: List[str] = []
+    if values is None:
+        return out
+    if isinstance(values, (list, tuple, set)):
+        for v in values:
+            out.extend(flatten_str_ids(v))
+        return out
+    s = str(values).strip()
+    if s:
+        out.append(s)
+    return out
+
+
 def get_data_commons_client():  # -> Optional[DataCommonsClient]
     key = dc_api_key()
     if not key:
@@ -61,6 +76,7 @@ def fetch_property_values_map(node_dcids: List[str], property_name: str) -> Dict
 
     v2 shape (simplified): data[dcid].arcs[prop].nodes[].value
     """
+    node_dcids = flatten_str_ids(node_dcids)
     if not node_dcids:
         return {}
     client = get_data_commons_client()
@@ -116,6 +132,8 @@ def fetch_observations_by_entity_batch(
     - `year=None` uses latest observations.
     - Chunks entities to keep requests bounded.
     """
+    entity_dcids = flatten_str_ids(entity_dcids)
+    variable_dcids = flatten_str_ids(variable_dcids)
     if not entity_dcids or not variable_dcids:
         return []
     client = get_data_commons_client()

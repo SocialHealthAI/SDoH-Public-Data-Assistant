@@ -1,0 +1,5 @@
+{
+  "$schema": "https://cursor.com/schemas/environment.json",
+  "install": "echo 'SDD Spec Kit is a prompt/markdown toolkit — no dependencies to install.'",
+  "terminals": []
+}

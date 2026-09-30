@@ -14,27 +14,27 @@ flowchart LR
   end
 
   Browser((Browser))
-  OpenAI["OpenAI API"]
+  LLM["LLM API<br/>OpenAI or Anthropic"]
   DCAPI["Data Commons API<br/>v2 REST"]
   CMS["data.cms.gov"]
   PLACES["data.cdc.gov<br/>CDC PLACES"]
 
   Browser -- "HTTP :8052" --> DC
   DC -- "MCP streamable HTTP<br/>/mcp" --> MCP
-  DC -- "HTTPS" --> OpenAI
+  DC -- "HTTPS" --> LLM
   DC -- "HTTPS<br/>DC_API_KEY" --> DCAPI
   DC -- "HTTPS" --> CMS
   DC -- "HTTPS" --> PLACES
   MCP -- "HTTPS<br/>DC_API_KEY" --> DCAPI
 ```
 
-**public-data-assistant** (`analytic_assistant_build/dockerfile.openai`) mounts `./agents` at `/myapps` for development. It exposes the Streamlit UI on `ASSISTANT_HOST_PORT` (default `8052`). Environment variables include `OPENAI_API_KEY`, `DC_API_KEY`, and `DATACOMMONS_URI` (default `http://data-commons-mcp:3000/mcp` on the compose network).
+**public-data-assistant** (`analytic_assistant_build/dockerfile.openai`) mounts `./agents` at `/myapps` for development. It exposes the Streamlit UI on `ASSISTANT_HOST_PORT` (default `8052`). Environment variables include `LLM_PROVIDER`, `LLM_MODEL`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, `DC_API_KEY`, and `DATACOMMONS_URI` (default `http://data-commons-mcp:3000/mcp` on the compose network). The image installs [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) from GitHub at build time (`analytic_assistant_build/pyproject.openai.toml`); do not bind-mount a local Core checkout for runtime.
 
 **data-commons-mcp** (`datacommons_server_build/dockerfile`) runs the published `datacommons-mcp` HTTP server. It exposes `DATACOMMONS_CONTAINER_PORT` (default `3000`) and uses the same `DC_API_KEY` as the assistant.
 
 ### Application stack
 
-The assistant is a Streamlit chat app (`streamlit_assistant.py`) backed by a LangChain **tool-calling agent** (`react_agent.py`). The agent iterates: choose a tool, run it, observe the result, repeat until it produces a final answer. An optional **audit** agent (`audit_agent.py`, separate model) reviews the user prompt, tool steps, and final answer when the user clicks **Run Audit**.
+The assistant is a Streamlit chat app (`streamlit_assistant.py`) backed by a LangChain **tool-calling agent** (`react_agent.py`). Shared LLM factory, tool-calling loop, and audit runner come from the [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) library (Git dependency). Product-owned code wires public-data tools, chart/map rendering, and the Streamlit shell; `document_section_tool` is not used. The agent iterates: choose a tool, run it, observe the result, repeat until it produces a final answer. An optional **audit** agent (`audit_agent.py`) uses the same `LLM_PROVIDER` and reviews the user prompt, tool steps, and final answer when the user clicks **Run Audit**.
 
 ```mermaid
 %%{init: {
@@ -46,9 +46,9 @@ The assistant is a Streamlit chat app (`streamlit_assistant.py`) backed by a Lan
 }}%%
 graph TB
 
-AssistantLLM["Assistant LLM<br/>gpt-5.2"]
+AssistantLLM["Assistant LLM<br/>LLM_PROVIDER"]
 App["Streamlit app<br/>ReActAgent"]
-AuditLLM["Audit LLM<br/>gpt-4o"]
+AuditLLM["Audit LLM<br/>same provider"]
 
 AssistantLLM <--> App
 App -.->|"on demand"| AuditLLM
@@ -102,7 +102,7 @@ class SearchObs,PlacesGeo,Stats,Viz tools;
 class MCPNode,DCAPI2,CMSAPI,PLACESAPI data;
 ```
 
-Charts and maps are generated as Python code in the agent run; **ChartRenderer** and **MapRenderer** execute that code in the Streamlit process and display results below the chat. Map geometry is not passed through the LLM context: `get_geojson_for_places` stores GeoJSON in the Streamlit session under a `geojson_ref` key that `generate_map` references at render time.
+Charts and maps are generated as Python code in the agent run; **ChartRenderer** and **MapRenderer** execute that code in the Streamlit process and display results below the chat. Map geometry is not passed through the LLM context: `get_geojson_for_places` stores GeoJSON in the Streamlit session under a `geojson_ref` key that `generate_map` references at render time. State GeoJSON from Data Commons includes Alaska rings at +179° longitude; the renderer unwraps those rings and crops national maps to the contiguous US so the lower 48 fills the pane.
 
 ### Request flow
 
@@ -119,7 +119,7 @@ A typical analysis follows this pattern:
 | Source | Discovery | Observations | Maps / places |
 |--------|-----------|--------------|---------------|
 | **Google Data Commons** | MCP `search_indicators` via `search_sdoh_indicators` | v2 batch API (preferred) or MCP `get_observations` | `geoJsonCoordinates` via v2; place expansion via `datacommons-client` |
-| **Centers for Medicare & Medicaid Services (CMS)** | data.cms.gov `data.json` catalog search | Per-dataset API inside `get_sdoh_observations` | Schema inferred per dataset; geo fields vary by program |
+| **Centers for Medicare & Medicaid Services (CMS)** | data.cms.gov `data.json` catalog search | Per-dataset API inside `get_sdoh_observations` | Schema inferred per dataset; geo fields vary by program. If the requested year is missing, the tool returns the latest year plus a warning. Rural/Urban breakouts are filtered to Overall rows. |
 | **CDC PLACES** | Socrata measure index on data.cdc.gov | Socrata query API | County, place, ZCTA, tract levels per release |
 
 All sources normalize to a shared **`place_key`** (usually a Data Commons DCID such as `geoId/39061` or `zip/45202`) so observations, correlation tables, and map layers can be joined.
@@ -133,7 +133,7 @@ The assistant LLM can call the tools below. Rules for when to use each tool and 
 | Tool | Role |
 |------|------|
 | **search_sdoh_indicators** | Unified search across Data Commons, CMS, and CDC PLACES; interleaves results per source. |
-| **get_sdoh_observations** | Preferred fetch for all repositories; returns long or wide tables. |
+| **get_sdoh_observations** | Preferred fetch for all repositories; returns long or wide tables. CMS year misses fall back to the latest available year; geography breakouts keep Overall only. |
 | **get_observations** | MCP fallback for a single Data Commons variable when `get_sdoh_observations` is unsuitable. |
 
 Implementation: `agents/tools/sdoh_search_tool.py`, `agents/tools/sdoh_observations_tool.py`, `agents/tools/sdoh_search_merge.py`, `agents/tools/cdc_places_helpers.py`, `agents/tools/dc_v2_helpers.py`.
@@ -167,14 +167,21 @@ Implementation: `agents/tools/correlation_tool.py`, `regression_tool.py`, `descr
 
 Implementation: `agents/tools/chart_tool.py`, `map_tool.py`, `chart_renderer.py`, `map_renderer.py`.
 
+### Shared library (`sdoh_core`)
+
+Product code imports these Core building blocks: LLM factory (`llm_config`), tool-calling loop (`agent_types` / `build_tool_calling_agent`), audit runner (`AuditAgent`), and Streamlit helpers (`escape_markdown`, `logic_step_*`).
+
+This assistant does **not** use Core’s requirements-document workflow: `document_section_tool`, `RequirementsFileHelper`, Core `ReActAgent`, or `run_assistant_app`. Public-data tools, chart/map rendering, and the chat shell stay in this repository.
+
 ### Key files
 
 | Path | Purpose |
 |------|---------|
 | `agents/streamlit_assistant.py` | Chat UI, session state, chart/map rendering, audit trigger |
-| `agents/react_agent.py` | Tool registration and agent run loop |
+| `agents/react_agent.py` | Product tool registration; LLM/loop from `sdoh_core` |
 | `agents/agent_system_prompt.txt` | Agent instructions (search order, wide tables, PLACES rules) |
-| `agents/audit_agent.py` | Independent review of a completed turn |
+| `agents/audit_agent.py` | Product audit criteria; LLM invoke from `sdoh_core` |
+| `analytic_assistant_build/pyproject.openai.toml` | Runtime deps, including `sdoh-core` from GitHub (`branch = "main"` until Core publishes a tag) |
 | `docker-compose.yaml` | Service definitions and port wiring |
 | `.env.example` | Required and optional environment variables |
 

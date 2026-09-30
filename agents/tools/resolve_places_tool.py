@@ -9,7 +9,7 @@ from tools.dc_place_expand import (
     expand_places_for_parent_and_level,
     normalize_place_key,
 )
-from tools.dc_v2_helpers import fetch_property_values_map
+from tools.dc_v2_helpers import fetch_property_values_map, flatten_str_ids
 
 
 PlaceLevel = Literal[
@@ -73,7 +73,7 @@ class ResolvePlacesForMapTool(StructuredTool):
 
         level = places.level
 
-        explicit_ids = [str(x).strip() for x in (places.ids or []) if str(x).strip()]
+        explicit_ids = flatten_str_ids(places.ids)
         normalized_explicit: List[str] = []
         for pid in explicit_ids:
             pk = normalize_place_key(pid, warnings, level=str(level))
