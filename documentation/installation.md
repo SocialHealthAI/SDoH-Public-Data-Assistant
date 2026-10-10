@@ -2,7 +2,7 @@
 
 This project uses Docker Compose to run two services on a shared network:
 
-- **public-data-assistant** — Streamlit chat UI and LangChain agent (tools for search, observations, statistics, charts, and maps).
+- **public-data-assistant** — Streamlit chat UI and LangChain agent (tools for search, observations, statistics, charts, maps, and optional AI Solution Requirements Definition updates).
 - **data-commons-mcp** — Local [Data Commons MCP](https://docs.datacommons.org/mcp/) server used for indicator search and as a fallback for observations.
 
 CMS and CDC PLACES data are accessed over the public internet from the assistant container; no extra containers are required for those sources.
@@ -91,6 +91,8 @@ Optional:
 | `CDC_PLACES_APP_TOKEN`  | Socrata app token for CDC PLACES (higher rate limits)                            |
 | `ASSISTANT_HOST_PORT`   | Host port for the Streamlit UI (default `8052`)                                  |
 | `ASSISTANT_BIND`        | Bind address for the UI (default `127.0.0.1`; use `0.0.0.0` to allow LAN access) |
+| `SDOH_DOCUMENTS_HOST`   | Host path for the shared `sdoh_documents/` folder (default `../sdoh_documents`, sibling of this repo). Other SDoH assistants use the same folder. |
+| `DOCUMENTS_ROOT`        | Path inside the assistant container (default `/documents`). Compose mounts `SDOH_DOCUMENTS_HOST` there. |
 
 
 ##### Docker images: local build or Docker Hub
@@ -119,6 +121,10 @@ DATACOMMONS_MCP_IMAGE=data-commons-mcp:local
 **Why this matters:** `docker-compose.yaml` includes both `image:` and `build:` for each service. The `image:` value is the tag Compose applies after a build *or* the name it uses when pulling. If local builds and Hub images share the same tag (for example `jeffgunderson/...:latest`), Compose cannot tell them apart and `docker compose up --build` will rebuild locally even when you intended to run from Hub.
 
 **Development note:** The assistant service mounts `./agents` into the container at `/myapps`. When that volume is present, the running app uses your host copy of the agent code regardless of whether the image was built locally or pulled from Hub. The MCP service has no source mount; it runs entirely from the image.
+
+Create the shared documents folder on the host if it does not exist (for example `C:\installs\sdoh_documents` next to this repo). The sidebar starts at `sdoh_documents/` with no filename; type a file name when you want Confirm-before-write updates.
+
+A local image build installs `sdoh-core` from GitHub `main` (AfterTurnHook and folder-only paths).
 
 #### Option A — Local build (default)
 

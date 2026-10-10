@@ -28,13 +28,13 @@ flowchart LR
   MCP -- "HTTPS<br/>DC_API_KEY" --> DCAPI
 ```
 
-**public-data-assistant** (`analytic_assistant_build/dockerfile.openai`) mounts `./agents` at `/myapps` for development. It exposes the Streamlit UI on `ASSISTANT_HOST_PORT` (default `8052`). Environment variables include `LLM_PROVIDER`, `LLM_MODEL`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, `DC_API_KEY`, and `DATACOMMONS_URI` (default `http://data-commons-mcp:3000/mcp` on the compose network). The image installs [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) from GitHub at build time (`analytic_assistant_build/pyproject.openai.toml`); do not bind-mount a local Core checkout for runtime.
+**public-data-assistant** (`analytic_assistant_build/dockerfile.openai`) mounts `./agents` at `/myapps` for development and the shared host folder `sdoh_documents/` at `/documents` (`DOCUMENTS_ROOT`). It exposes the Streamlit UI on `ASSISTANT_HOST_PORT` (default `8052`). Environment variables include `LLM_PROVIDER`, `LLM_MODEL`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, `DC_API_KEY`, `DATACOMMONS_URI` (default `http://data-commons-mcp:3000/mcp` on the compose network), and `DOCUMENTS_ROOT`. The image installs [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) from GitHub at build time (`analytic_assistant_build/pyproject.openai.toml`, `branch = "main"`); do not bind-mount a local Core checkout for runtime.
 
 **data-commons-mcp** (`datacommons_server_build/dockerfile`) runs the published `datacommons-mcp` HTTP server. It exposes `DATACOMMONS_CONTAINER_PORT` (default `3000`) and uses the same `DC_API_KEY` as the assistant.
 
 ### Application stack
 
-The assistant is a Streamlit chat app (`streamlit_assistant.py`) backed by a LangChain **tool-calling agent** (`react_agent.py`). Shared LLM factory, tool-calling loop, and audit runner come from the [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) library (Git dependency). Product-owned code wires public-data tools, chart/map rendering, and the Streamlit shell; `document_section_tool` is not used. The agent iterates: choose a tool, run it, observe the result, repeat until it produces a final answer. An optional **audit** agent (`audit_agent.py`) uses the same `LLM_PROVIDER` and reviews the user prompt, tool steps, and final answer when the user clicks **Run Audit**.
+The assistant is a Streamlit chat app (`streamlit_assistant.py`) using Core’s `run_assistant_app` for confirm-before-write document chrome. `build_data_agent.py` constructs Core `ReActAgent` with public-data tools plus **`propose_data_inventory_assessment_update`**. Shared LLM factory, tool-calling loop, document helper, and audit runner come from [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant). Product-owned code wires public-data tools, chart/map rendering (`AfterTurnHook`), welcome copy, and framework headings. The sidebar starts at `sdoh_documents/` with no filename; exploration works until the practitioner names a file. An optional **audit** agent (`audit_agent.py`) uses the same `LLM_PROVIDER` and reviews the user prompt, tool steps, and final answer when the user clicks **Run Audit**.
 
 ```mermaid
 %%{init: {
@@ -47,7 +47,7 @@ The assistant is a Streamlit chat app (`streamlit_assistant.py`) backed by a Lan
 graph TB
 
 AssistantLLM["Assistant LLM<br/>LLM_PROVIDER"]
-App["Streamlit app<br/>ReActAgent"]
+App["Streamlit app<br/>Core shell + data agent"]
 AuditLLM["Audit LLM<br/>same provider"]
 
 AssistantLLM <--> App
@@ -62,12 +62,14 @@ subgraph Tools["Agent tools"]
   PlacesGeo["resolve_places_for_map<br/>get_geojson_for_places"]
   Stats["calculate_correlation<br/>regression_analysis<br/>descriptive_stats<br/>time_series_forecast"]
   Viz["generate_chart<br/>generate_map"]
+  Doc["propose_data_inventory_assessment_update"]
 end
 
 App <--> SearchObs
 App <--> PlacesGeo
 App <--> Stats
 App <--> Viz
+App <--> Doc
 
 subgraph Local["Compose network"]
   MCPNode["data-commons-mcp"]
@@ -98,7 +100,7 @@ classDef data fill:#FFE0B2,stroke:#C77700,stroke-width:1px;
 class User user;
 class App app;
 class AssistantLLM,AuditLLM llm;
-class SearchObs,PlacesGeo,Stats,Viz tools;
+class SearchObs,PlacesGeo,Stats,Viz,Doc tools;
 class MCPNode,DCAPI2,CMSAPI,PLACESAPI data;
 ```
 
@@ -113,12 +115,13 @@ A typical analysis follows this pattern:
 3. **Shape** — The agent builds **wide** markdown tables (one numeric column per variable, one row per place) for multi-variable work.
 4. **Analyze or visualize** — Statistics tools parse those tables; chart and map tools consume table data or structured payloads. Maps call `resolve_places_for_map` and `get_geojson_for_places` first when boundaries are needed.
 5. **Review** — The user may expand logic steps or run the audit LLM on the completed turn.
+6. **Document (optional)** — With a named file that has Problem Definition, the agent may propose Data Inventory or Data Assessment updates. Disk does not change until **Confirm write**.
 
 ### Data sources
 
 | Source | Discovery | Observations | Maps / places |
 |--------|-----------|--------------|---------------|
-| **Google Data Commons** | MCP `search_indicators` via `search_sdoh_indicators` | v2 batch API (preferred) or MCP `get_observations` | `geoJsonCoordinates` via v2; place expansion via `datacommons-client` |
+| **Google Data Commons** | MCP `search_indicators` via `search_sdoh_indicators` (place-scoped; default United States; parses Agent API `variableCandidates` tables and `variables` + `dcidNameMappings`) | v2 batch API (preferred) or MCP `get_observations` | `geoJsonCoordinates` via v2; place expansion via `datacommons-client` |
 | **Centers for Medicare & Medicaid Services (CMS)** | data.cms.gov `data.json` catalog search | Per-dataset API inside `get_sdoh_observations` | Schema inferred per dataset; geo fields vary by program. If the requested year is missing, the tool returns the latest year plus a warning. Rural/Urban breakouts are filtered to Overall rows. |
 | **CDC PLACES** | Socrata measure index on data.cdc.gov | Socrata query API | County, place, ZCTA, tract levels per release |
 
@@ -132,7 +135,7 @@ The assistant LLM can call the tools below. Rules for when to use each tool and 
 
 | Tool | Role |
 |------|------|
-| **search_sdoh_indicators** | Unified search across Data Commons, CMS, and CDC PLACES; interleaves results per source. |
+| **search_sdoh_indicators** | Unified search across Data Commons, CMS, and CDC PLACES; interleaves results per source. Data Commons search is place-scoped (default United States). |
 | **get_sdoh_observations** | Preferred fetch for all repositories; returns long or wide tables. CMS year misses fall back to the latest available year; geography breakouts keep Overall only. |
 | **get_observations** | MCP fallback for a single Data Commons variable when `get_sdoh_observations` is unsuitable. |
 
@@ -167,21 +170,32 @@ Implementation: `agents/tools/correlation_tool.py`, `regression_tool.py`, `descr
 
 Implementation: `agents/tools/chart_tool.py`, `map_tool.py`, `chart_renderer.py`, `map_renderer.py`.
 
+#### Requirements document
+
+| Tool | Role |
+|------|------|
+| **propose_data_inventory_assessment_update** | Propose one `##` section (default Problem Definition). Does not write. Practitioner Confirm write / Cancel in Core Streamlit. |
+
+Implementation: `agents/data_document.py`, `agents/framework_sections.py`, `agents/file_baseline.py`, `agents/build_data_agent.py`.
+
 ### Shared library (`sdoh_core`)
 
-Product code imports these Core building blocks: LLM factory (`llm_config`), tool-calling loop (`agent_types` / `build_tool_calling_agent`), audit runner (`AuditAgent`), and Streamlit helpers (`escape_markdown`, `logic_step_*`).
+Product code imports Core LLM factory (`llm_config`), tool-calling loop, Core `ReActAgent`, `RequirementsFileHelper`, `DocumentSectionTool`, `run_assistant_app` / `AssistantAppConfig` / `AfterTurnHook`, and `AuditAgent`.
 
-This assistant does **not** use Core’s requirements-document workflow: `document_section_tool`, `RequirementsFileHelper`, Core `ReActAgent`, or `run_assistant_app`. Public-data tools, chart/map rendering, and the chat shell stay in this repository.
+Public-data tools, chart/map renderers, welcome copy, and framework headings stay in this repository. Charts/maps persist through `AfterTurnHook.collect` / `render`. The image installs Core from GitHub `main`.
 
 ### Key files
 
 | Path | Purpose |
 |------|---------|
-| `agents/streamlit_assistant.py` | Chat UI, session state, chart/map rendering, audit trigger |
-| `agents/react_agent.py` | Product tool registration; LLM/loop from `sdoh_core` |
-| `agents/agent_system_prompt.txt` | Agent instructions (search order, wide tables, PLACES rules) |
-| `agents/audit_agent.py` | Product audit criteria; LLM invoke from `sdoh_core` |
-| `analytic_assistant_build/pyproject.openai.toml` | Runtime deps, including `sdoh-core` from GitHub (`branch = "main"` until Core publishes a tag) |
+| `agents/streamlit_assistant.py` | Core `run_assistant_app` + AfterTurnHook for charts/maps |
+| `agents/build_data_agent.py` | Core `ReActAgent` + public-data tools + propose tool |
+| `agents/react_agent.py` | Public-data tool assembly |
+| `agents/welcome_message.py` | Opening greeting (no LLM; no default filename) |
+| `agents/data_document.py` | Framework heading binding for `DocumentSectionTool` |
+| `agents/agent_system_prompt.txt` | Agent instructions (search, maps, document propose/confirm) |
+| `agents/audit_agent.py` | Product audit criteria + Streamlit `audit()` adapter |
+| `analytic_assistant_build/pyproject.openai.toml` | Runtime deps, including `sdoh-core` from GitHub `main` |
 | `docker-compose.yaml` | Service definitions and port wiring |
 | `.env.example` | Required and optional environment variables |
 

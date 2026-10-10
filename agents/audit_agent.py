@@ -45,6 +45,32 @@ def format_tool_steps_for_audit(
     )
 
 
+class StreamlitAuditAdapter:
+    """Core run_assistant_app calls audit(); keep product audit_turn with steps."""
+
+    def __init__(self, product_audit: "AuditAgent") -> None:
+        self._audit = product_audit
+        self.tool_descriptions = ""
+        self.intermediate_steps: List = []
+
+    def display_name(self) -> str:
+        return self._audit.display_name()
+
+    def remember_turn(self, tool_descriptions: str, result: dict) -> None:
+        self.tool_descriptions = tool_descriptions or ""
+        self.intermediate_steps = result.get("intermediate_steps") or []
+
+    def audit(self, user_prompt: str, conversation: str, final_answer: str) -> str:
+        if self.tool_descriptions or self.intermediate_steps:
+            return self._audit.audit_turn(
+                user_prompt=user_prompt,
+                tool_descriptions=self.tool_descriptions,
+                intermediate_steps=self.intermediate_steps,
+                final_answer=final_answer,
+            )
+        return self._audit.audit(user_prompt, conversation, final_answer)
+
+
 class AuditAgent(CoreAuditAgent):
     """Public-data audit agent with a fixed product system prompt."""
 

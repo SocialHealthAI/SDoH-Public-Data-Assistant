@@ -8,7 +8,7 @@ The assistant helps with data modeling: finding variables, understanding coverag
 
 Today it connects to **Google Data Commons**, **Centers for Medicare & Medicaid Services (CMS) datasets**, and **CDC PLACES**. A planned capability is connecting your own database so you can explore local data alongside public repositories and relate the two (not yet implemented).
 
-An optional **audit** pass reviews the agent's reasoning steps and final answer for gaps or improvements. Shared LLM, tool-calling, and audit cores come from the [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) library (Git dependency); this repo owns public-data tools and the Streamlit UI.
+An optional **audit** pass reviews the agent's reasoning steps and final answer for gaps or improvements. You can also attach findings to a shared **AI Solution Requirements Definition** (Data Inventory and Data Assessment) with confirm-before-write. Shared LLM, document, and Streamlit cores come from the [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) library (Git dependency on `main`); this repo owns public-data tools, charts/maps, and welcome copy.
 
 ### Quickstart
 
@@ -26,6 +26,7 @@ cd SDoH-Public-Data-Assistant
   - `OPENAI_API_KEY` — required when `LLM_PROVIDER=openai` (the default).
   - `ANTHROPIC_API_KEY` — required when testing with `LLM_PROVIDER=anthropic` (default model `claude-sonnet-5`).
   - `DC_API_KEY` — required for Data Commons maps, place expansion, and batched observation fetches. Request a key from the [Data Commons API documentation](https://docs.datacommons.org/api/).
+  - Shared documents folder — default host path `../sdoh_documents` (create it if needed). The sidebar starts with no requirements filename.
 2. **Build and start the containers** (`public-data-assistant` and `data-commons-mcp`):
 
 ```

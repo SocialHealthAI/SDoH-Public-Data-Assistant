@@ -1,195 +1,70 @@
 """
-SDoH Public Data Assistant - Main Streamlit Application
-
-Chat shell and viz rendering stay product-owned (charts/maps). LLM/audit cores
-come from sdoh_core. document_section_tool is not used.
+SDoH Public Data Assistant — Core Streamlit shell plus product charts/maps.
 """
-import streamlit as st
 import os
 
-from sdoh_core.streamlit_app import (
-    escape_markdown,
-    logic_step_input,
-    logic_step_label,
-    logic_step_observation,
-)
+import streamlit as st
 
+from sdoh_core.streamlit_app import AfterTurnHook, AssistantAppConfig, run_assistant_app
+
+from audit_agent import AuditAgent, StreamlitAuditAdapter
+from build_data_agent import DEFAULT_DOC_PATH, build_data_agent
 from chart_renderer import ChartRenderer
 from map_renderer import MapRenderer
-from react_agent import ReActAgent
-from audit_agent import AuditAgent
-
-##############################################################
-#   Set up agent
-##############################################################
+from react_agent import collect_viz_extras
+from welcome_message import HELP_TEXT, build_welcome_message
 
 datacommons_uri = os.environ.get("DATACOMMONS_URI")
 if not datacommons_uri:
     st.error("No DATACOMMONS_URI found. Please set the DATACOMMONS_URI environment variable.")
     st.stop()
 
-# LLM_PROVIDER / LLM_MODEL / API keys are read by sdoh_core (openai or anthropic).
-agent = ReActAgent(
+agent = build_data_agent(
     mcp_uri=datacommons_uri,
     max_iterations=16,
     system_prompt_path="agent_system_prompt.txt",
+    default_doc_path=DEFAULT_DOC_PATH,
 )
-audit_agent = AuditAgent(temperature=0.0)
+audit_agent = StreamlitAuditAdapter(AuditAgent(temperature=0.0))
 chart_renderer = ChartRenderer()
 map_renderer = MapRenderer()
 
-##############################################################
-#   Streamlit App Logic
-##############################################################
 
-st.title("🧠 SDoH Public Data Assistant")
+def collect_turn(result: dict) -> dict:
+    audit_agent.remember_turn(agent.get_tool_descriptions_text(), result)
+    extras = collect_viz_extras(agent.get_chart_tool(), agent.get_map_tool())
+    extras["tool_descriptions"] = agent.get_tool_descriptions_text()
+    return extras
 
-# Initialize Session State
-if "messages" not in st.session_state:
-    st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you?"}]
-if "last_result" not in st.session_state:
-    st.session_state["last_result"] = None
-if "show_audit" not in st.session_state:
-    st.session_state["show_audit"] = False
-if "show_steps" not in st.session_state:
-    st.session_state["show_steps"] = False
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("Controls")
+def render_turn(last_result: dict) -> None:
+    if last_result.get("map_code"):
+        map_renderer.render_from_code(
+            last_result["map_code"],
+            explanation=None,
+            geojson_ref=last_result.get("map_geojson_ref"),
+            outline_geojson_ref=last_result.get("map_outline_geojson_ref"),
+            data_variables=last_result.get("map_data"),
+        )
+    if last_result.get("chart_code"):
+        chart_renderer.render_from_code(last_result["chart_code"], explanation=None)
 
-    if st.button("Clear message history", use_container_width=True):
-        st.session_state["messages"] = [{"role": "assistant", "content": "How can I help you?"}]
-        st.session_state["last_result"] = None
-        st.session_state["show_audit"] = False
-        st.session_state["show_steps"] = False
-        st.rerun()
 
-    if st.session_state["last_result"] is not None:
-        st.divider()
-        st.subheader("Analysis Tools")
+def intro_for_path(doc_path: str) -> str:
+    return build_welcome_message(doc_path, agent._helper, agent._document_tool)
 
-        if st.button("🧩 View Logic Steps", use_container_width=True):
-            st.session_state["show_steps"] = not st.session_state["show_steps"]
-            st.session_state["show_audit"] = False
 
-        if st.button("🔍 Run Audit", type="secondary", use_container_width=True):
-            st.session_state["show_audit"] = True
-            st.session_state["show_steps"] = False
-
-# --- MAIN CHAT AREA ---
-
-# 1. Display Message History
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# 2. PERSISTENT VISUALIZATION RENDERING
-last_result = st.session_state["last_result"]
-if last_result and (last_result.get("chart_code") or last_result.get("map_code")):
-    if not st.session_state["show_steps"] and not st.session_state["show_audit"]:
-        if last_result.get("map_code"):
-            map_renderer.render_from_code(
-                last_result["map_code"],
-                explanation=None,
-                geojson_ref=last_result.get("map_geojson_ref"),
-                outline_geojson_ref=last_result.get("map_outline_geojson_ref"),
-                data_variables=last_result.get("map_data"),
-            )
-        if last_result.get("chart_code"):
-            chart_renderer.render_from_code(last_result["chart_code"], explanation=None)
-
-# 3. Logic Steps Display with Header
-if st.session_state["show_steps"] and st.session_state["last_result"]:
-    st.divider()
-    st.header("🧩 Logic Steps")
-    steps = st.session_state["last_result"]["result"].get("intermediate_steps", [])
-
-    for i, step in enumerate(steps, start=1):
-        with st.expander(logic_step_label(step, i), expanded=True):
-            st.markdown(f"**Action Input:** `{logic_step_input(step)}`")
-            obs = logic_step_observation(step)
-            if len(obs.splitlines()) > 5:
-                obs = "\n".join(obs.splitlines()[:5]) + "\n... (truncated)"
-            st.code(obs)
-
-# 4. Audit Display
-if st.session_state["show_audit"] and st.session_state["last_result"]:
-    st.divider()
-    last = st.session_state["last_result"]
-    with st.spinner("Conducting audit..."):
-        try:
-            st.subheader("🔍 Audit Report")
-            audit_report = audit_agent.audit_turn(
-                tool_descriptions=last["tool_descriptions"],
-                user_prompt=last["prompt"],
-                intermediate_steps=last["result"].get("intermediate_steps", []),
-                final_answer=last["result"].get("output", ""),
-            )
-            st.markdown(audit_report)
-            st.caption(f"*Audited by: {audit_agent.display_name()}*")
-        except Exception as e:
-            st.error(f"Audit failed: {e}")
-
-# --- INPUT AREA ---
-
-prompt = st.chat_input("Ask about public SDoH indicators, places, or analyses")
-
-if prompt:
-    st.session_state["show_audit"] = False
-    st.session_state["show_steps"] = False
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    with st.spinner("Processing..."):
-        try:
-            result = agent.run(prompt)
-
-            chart_tool = agent.get_chart_tool()
-            map_tool = agent.get_map_tool()
-            saved_chart_code = None
-            saved_map_code = None
-            saved_map_geojson_ref = None
-            saved_map_outline_geojson_ref = None
-            saved_map_data = None
-
-            if chart_tool and hasattr(chart_tool, "_latest_result"):
-                latest_result = chart_tool._latest_result
-                if latest_result and latest_result.get("code_block"):
-                    saved_chart_code = latest_result.get("code_block")
-
-            if map_tool and hasattr(map_tool, "_latest_result"):
-                latest_result = map_tool._latest_result
-                if latest_result:
-                    if latest_result.get("code_block"):
-                        saved_map_code = latest_result.get("code_block")
-                    if latest_result.get("geojson_ref"):
-                        saved_map_geojson_ref = latest_result.get("geojson_ref")
-                    if latest_result.get("outline_geojson_ref"):
-                        saved_map_outline_geojson_ref = latest_result.get(
-                            "outline_geojson_ref"
-                        )
-                    if latest_result.get("data"):
-                        saved_map_data = latest_result.get("data")
-
-            st.session_state["last_result"] = {
-                "prompt": prompt,
-                "result": result,
-                "tool_descriptions": agent.get_tool_descriptions_text(),
-                "chart_code": saved_chart_code,
-                "map_code": saved_map_code,
-                "map_geojson_ref": saved_map_geojson_ref,
-                "map_outline_geojson_ref": saved_map_outline_geojson_ref,
-                "map_data": saved_map_data,
-            }
-
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": escape_markdown(result.get("output", "")),
-                }
-            )
-
-            st.rerun()
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+run_assistant_app(
+    AssistantAppConfig(
+        title="🧠 SDoH Public Data Assistant",
+        intro_message=HELP_TEXT.strip(),
+        chat_placeholder="Ask about public SDoH indicators, places, or analyses",
+        file_input_label="Requirements file",
+        default_doc_path=DEFAULT_DOC_PATH,
+        agent=agent,
+        audit_agent=audit_agent,
+        file_helper=agent._helper,
+        intro_builder=intro_for_path,
+        after_turn=AfterTurnHook(collect=collect_turn, render=render_turn),
+    )
+)

@@ -21,7 +21,11 @@ class PlaceScope(BaseModel):
     )
     within: Optional[str] = Field(
         default=None,
-        description="Optional parent place hint (e.g., 'Kentucky', 'Clermont County, OH'). Used for ranking/filtering only.",
+        description=(
+            "Optional human-readable place for Data Commons search (e.g., 'Kentucky', "
+            "'Clermont County, OH', 'United States'). Never pass a DCID. Defaults to "
+            "the United States when omitted."
+        ),
     )
 
 
@@ -68,6 +72,11 @@ def _safe_lower(x: Any) -> str:
     return str(x).strip().lower()
 
 
+# Latest datacommons-mcp / Agent API search is place-scoped. Human-readable names only
+# (not DCIDs). United States is the product default so SDoH discovery stays US-relevant.
+_DEFAULT_DC_SEARCH_PLACES = ["United States"]
+
+
 def _coalesce(d: Dict[str, Any], keys: List[str]) -> Optional[Any]:
     for k in keys:
         if k in d and d[k] not in (None, ""):
@@ -81,6 +90,64 @@ def _coalesce(d: Dict[str, Any], keys: List[str]) -> Optional[Any]:
             if v not in (None, ""):
                 return v
     return None
+
+
+def _first_dict(d: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, dict):
+            return v
+    return {}
+
+
+def _table_rows_as_dicts(table: Any) -> List[Dict[str, Any]]:
+    """Convert Agent API {columns, rows} tables into list[dict]."""
+    if not isinstance(table, dict):
+        return []
+    cols = table.get("columns")
+    rows = table.get("rows")
+    if not isinstance(cols, list) or not isinstance(rows, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        item: Dict[str, Any] = {}
+        for i, col in enumerate(cols):
+            if i >= len(row) or not isinstance(col, str) or not col:
+                continue
+            item[col] = row[i]
+        if item:
+            out.append(item)
+    return out
+
+
+def _member_variable_dcids(topic: Dict[str, Any]) -> List[str]:
+    members = topic.get("memberVariables")
+    if members is None:
+        members = topic.get("member_variables")
+    if isinstance(members, dict):
+        members = members.get("value") or members.get("values")
+    if not isinstance(members, list):
+        return []
+    dcids: List[str] = []
+    for m in members:
+        if isinstance(m, str) and m.strip():
+            dcids.append(m.strip())
+        elif isinstance(m, dict):
+            dcid = _coalesce(m, ["dcid", "DCID", "id"])
+            if isinstance(dcid, str) and dcid.strip():
+                dcids.append(dcid.strip())
+    return dcids
+
+
+def dc_search_places(place_scope: Optional[PlaceScope]) -> List[str]:
+    """Human-readable places for MCP search_indicators (never DCIDs)."""
+    if place_scope is not None:
+        within = getattr(place_scope, "within", None)
+        if isinstance(within, str) and within.strip():
+            return [within.strip()]
+    return list(_DEFAULT_DC_SEARCH_PLACES)
 
 
 class SdohSearchTool(StructuredTool):
@@ -130,16 +197,24 @@ class SdohSearchTool(StructuredTool):
 
         src_meta = raw.get("source_metadata")
         if not isinstance(src_meta, dict):
+            src_meta = raw.get("sourceMetadata")
+        if not isinstance(src_meta, dict):
             return None
 
         # Some series return placeholders like {"source_id":"unknown"} when metadata is missing.
-        import_name = src_meta.get("import_name")
-        source_id = src_meta.get("source_id")
-        provenance_url = src_meta.get("provenance_url")
+        import_name = src_meta.get("import_name") or src_meta.get("importName")
+        source_id = src_meta.get("source_id") or src_meta.get("sourceId")
+        provenance_url = src_meta.get("provenance_url") or src_meta.get("provenanceUrl")
         if not import_name and not provenance_url and (source_id in (None, "", "unknown")):
             return None
 
-        return src_meta
+        return {
+            "import_name": import_name,
+            "source_id": source_id,
+            "measurement_method": src_meta.get("measurement_method") or src_meta.get("measurementMethod"),
+            "observation_period": src_meta.get("observation_period") or src_meta.get("observationPeriod"),
+            "provenance_url": provenance_url,
+        }
 
     def _infer_metric_source(self, variable_dcid: str, probe_places: List[str]) -> Optional[Dict[str, Any]]:
         for place in probe_places:
@@ -156,18 +231,26 @@ class SdohSearchTool(StructuredTool):
                 }
         return None
 
-    def _call_dc_search(self, query: str, include_topics: bool = True) -> Any:
+    def _call_dc_search(
+        self,
+        query: str,
+        include_topics: bool = True,
+        places: Optional[List[str]] = None,
+    ) -> Any:
         """
         Call Data Commons MCP search tool with best-effort arg mapping.
         We keep this resilient because the MCP tool schema is external to this repo.
         """
-        # Try common parameter names for search text.
-        attempts = []
-        # Known datacommons-mcp schema uses "query" and supports include_topics.
-        attempts.append({"query": query, "include_topics": bool(include_topics)})
-        # Fallbacks for older/alternate schemas.
+        place_names = [p.strip() for p in (places or []) if isinstance(p, str) and p.strip()]
+        attempts: List[Dict[str, Any]] = []
+        # Current datacommons-mcp: query + optional places (human-readable) + include_topics.
+        scoped = {"query": query, "include_topics": bool(include_topics)}
+        if place_names:
+            scoped["places"] = place_names
+        attempts.append(scoped)
         attempts.extend(
             [
+                {"query": query, "include_topics": bool(include_topics)},
                 {"query": query},
                 {"q": query},
                 {"text": query},
@@ -193,7 +276,10 @@ class SdohSearchTool(StructuredTool):
     ) -> List[Dict[str, Any]]:
         """
         Normalize Data Commons search results into the unified candidate shape.
-        Accepts list[dict] or dict-with-list payloads; ignores unknown shapes.
+
+        Accepts current Agent API payloads (variableCandidates tables, or
+        variables + dcidNameMappings), the older variables + dcid_name_mappings
+        object list, and generic list[dict] payloads.
         """
         items: List[Dict[str, Any]] = []
 
@@ -205,85 +291,95 @@ class SdohSearchTool(StructuredTool):
                 # If it's not JSON, we can't reliably normalize it.
                 return []
 
-        # Raw may be a dict containing a list under various keys.
-        if isinstance(raw, dict):
-            # datacommons-mcp returns: {"variables":[{dcid,...}], "dcid_name_mappings":{...}, ...}
-            dcid_name_mappings = raw.get("dcid_name_mappings") if isinstance(raw.get("dcid_name_mappings"), dict) else {}
+        variable_rows: List[Dict[str, Any]] = []
+        topic_rows: List[Dict[str, Any]] = []
+        name_map: Dict[str, Any] = {}
 
+        if isinstance(raw, dict):
+            name_map = _first_dict(raw, ["dcid_name_mappings", "dcidNameMappings"])
+            variable_rows.extend(
+                _table_rows_as_dicts(
+                    raw.get("variableCandidates") or raw.get("variable_candidates")
+                )
+            )
+            topic_rows.extend(
+                _table_rows_as_dicts(
+                    raw.get("topicCandidates") or raw.get("topic_candidates")
+                )
+            )
             variables = raw.get("variables")
             if isinstance(variables, list):
                 for v in variables:
-                    if not isinstance(v, dict):
-                        continue
-                    dcid = _coalesce(v, ["dcid", "DCID", "id"])
-                    if not dcid:
-                        continue
-                    name = dcid_name_mappings.get(dcid) or _coalesce(v, ["name", "Name", "title", "label"])
-                    alt_desc = _coalesce(v, ["alternate_descriptions", "alternateDescriptions", "description"])
-                    # alternate_descriptions is usually a list[str]
-                    description = None
-                    if isinstance(alt_desc, list) and alt_desc:
-                        description = str(alt_desc[0])
-                    elif isinstance(alt_desc, str):
-                        description = alt_desc
+                    if isinstance(v, dict):
+                        variable_rows.append(v)
+                    elif isinstance(v, str) and v.strip():
+                        variable_rows.append({"dcid": v.strip()})
+            topics = raw.get("topics")
+            if isinstance(topics, list):
+                topic_rows.extend([t for t in topics if isinstance(t, dict)])
+            if not variable_rows and not topic_rows:
+                for k in ["results", "items", "indicators", "data"]:
+                    v = raw.get(k)
+                    if isinstance(v, list):
+                        raw = v
+                        break
 
-                    items.append(
-                        {
-                            "indicator_id": f"datacommons:{dcid}",
-                            "source": "datacommons",
-                            "native_id": dcid,
-                            "name": name or dcid,
-                            "type": "StatisticalVariable",
-                            "description": description,
-                            # repository: where we retrieved the metric from
-                            "repository": {"name": "Data Commons"},
-                            # metric_source: upstream dataset/survey/model backing this metric (if known)
-                            "metric_source": None,
-                        }
-                    )
-                items = items[: max_results or 20]
+        seen: set[str] = set()
+        limit = max_results or 20
 
-                if include_metric_source:
-                    # Probe a small number of candidates to infer dataset/survey backing the metric.
-                    # This is best-effort and may be None if the series isn't available for probe place.
-                    probe_places = metric_source_probe_place_dcids or ["geoId/21"]
-                    filled = 0
-                    target = min(5, len(items))
-                    # Scan a bit deeper than the first N so we can skip candidates
-                    # that have no observations for the probe places.
-                    for i in range(min(len(items), 50)):
-                        if filled >= target:
-                            break
-                        native_id = items[i].get("native_id")
-                        if not native_id or not isinstance(native_id, str):
-                            continue
-                        ms = self._infer_metric_source(native_id, probe_places)
-                        if not ms:
-                            continue
-                        items[i]["metric_source"] = ms
-                        filled += 1
+        def _append_variable(dcid: Any, name: Any, description: Any = None, typ: Any = "StatisticalVariable") -> None:
+            if not dcid or not isinstance(dcid, str):
+                return
+            dcid = dcid.strip()
+            if not dcid or dcid in seen or dcid.startswith("dc/topic/"):
+                return
+            seen.add(dcid)
+            mapped = name_map.get(dcid)
+            desc = description
+            if isinstance(desc, list) and desc:
+                desc = str(desc[0])
+            elif desc is not None:
+                desc = str(desc)
+            items.append(
+                {
+                    "indicator_id": f"datacommons:{dcid}",
+                    "source": "datacommons",
+                    "native_id": dcid,
+                    "name": mapped or name or dcid,
+                    "type": typ or "StatisticalVariable",
+                    "description": desc,
+                    "repository": {"name": "Data Commons"},
+                    "metric_source": None,
+                }
+            )
 
-                return items
+        for v in variable_rows:
+            dcid = _coalesce(v, ["dcid", "DCID", "id"])
+            name = _coalesce(v, ["name", "Name", "title", "label"])
+            alt_desc = _coalesce(v, ["alternate_descriptions", "alternateDescriptions", "description"])
+            _append_variable(dcid, name, alt_desc)
+            if len(items) >= limit:
+                break
 
-            for k in ["results", "items", "indicators", "data", "variables"]:
-                v = raw.get(k)
-                if isinstance(v, list):
-                    raw = v
+        if len(items) < limit:
+            for topic in topic_rows:
+                for member in _member_variable_dcids(topic):
+                    _append_variable(member, None)
+                    if len(items) >= limit:
+                        break
+                if len(items) >= limit:
                     break
 
-        if isinstance(raw, list):
+        if not items and isinstance(raw, list):
             for r in raw:
                 if not isinstance(r, dict):
                     continue
                 dcid = _coalesce(r, ["dcid", "DCID", "id", "stat_var", "statVar", "statisticalVariable"])
                 name = _coalesce(r, ["name", "Name", "title", "label"])
                 typ = _coalesce(r, ["type", "Type"])
-                # Some payloads may put dataset/source under "provenance" or "dataset".
                 src = _coalesce(r, ["source", "Source", "dataset", "metric_source", "metricSource", "provenance"])
-
                 if not dcid and not name:
                     continue
-
                 items.append(
                     {
                         "indicator_id": f"datacommons:{dcid}" if dcid else f"datacommons:name:{name}",
@@ -295,8 +391,10 @@ class SdohSearchTool(StructuredTool):
                         "metric_source": {"name": src} if src else None,
                     }
                 )
+                if len(items) >= limit:
+                    break
 
-        items = items[: max_results or 20]
+        items = items[:limit]
 
         if include_metric_source:
             probe_places = metric_source_probe_place_dcids or ["geoId/21"]
@@ -504,18 +602,39 @@ class SdohSearchTool(StructuredTool):
                 f"(max_results={max_results or 20} total). Increase max_results if you need more per repository."
             )
 
-        # Data Commons. Place/time scopes reserved for ranking later.
+        # Data Commons. Time scope reserved for ranking later; place_scope.within
+        # is forwarded as a human-readable search place (default: United States).
         if "datacommons" in allowed:
             sources_checked.append("datacommons")
-            raw = self._call_dc_search(query=query, include_topics=include_topics)
-            buckets.append(
-                self._normalize_dc_results(
-                    raw,
-                    max_results=per_cap,
-                    include_metric_source=include_metric_source,
-                    metric_source_probe_place_dcids=metric_source_probe_place_dcids,
+            places = dc_search_places(place_scope)
+            try:
+                raw = self._call_dc_search(
+                    query=query,
+                    include_topics=include_topics,
+                    places=places,
                 )
-            )
+                buckets.append(
+                    self._normalize_dc_results(
+                        raw,
+                        max_results=per_cap,
+                        include_metric_source=include_metric_source,
+                        metric_source_probe_place_dcids=metric_source_probe_place_dcids,
+                    )
+                )
+            except Exception as e:
+                warnings.append(
+                    f"Data Commons indicator search failed (best-effort): {type(e).__name__}: {e}"
+                )
+                buckets.append([])
+            else:
+                used_default_place = places == _DEFAULT_DC_SEARCH_PLACES and not (
+                    place_scope and getattr(place_scope, "within", None)
+                )
+                if used_default_place:
+                    warnings.append(
+                        "Data Commons search scoped to 'United States' by default. "
+                        "Pass place_scope.within with a human-readable place to check another geography."
+                    )
 
         if "cms" in allowed:
             sources_checked.append("cms")
@@ -542,8 +661,7 @@ class SdohSearchTool(StructuredTool):
         for s in unsupported:
             warnings.append(f"Source {s!r} is not supported (supported: datacommons, cms, cdcplaces).")
 
-        # Best-effort light filtering/ranking hooks (no-op for now; keep args to lock signature)
-        _ = place_scope
+        # Time scope reserved for ranking later; keep the arg to lock the tool signature.
         _ = time_scope
 
         results = interleave_search_results(buckets, max_results or 20)

@@ -8,6 +8,8 @@ http://localhost:8052
 
 Enter prompts in the chat input. When the agent finishes, you can expand **intermediate tool steps** to see which indicators were searched, which observations were fetched, and how tables were shaped for analysis. An optional **audit** reviews the run for gaps or improvements.
 
+The sidebar **Requirements file** box starts as `sdoh_documents/` with no filename. You can explore, chart, and map without a file. To attach findings to an **AI Solution Requirements Definition**, type a file name under that folder (the file must have a Problem Definition section). The agent proposes Data Inventory or Data Assessment updates; click **Confirm write** to save or **Cancel** to discard. **Save current draft** stays available in the sidebar.
+
 ![Assistant chat screen](image/assistant-screen.png)
 
 ### Connected data sources
@@ -22,7 +24,7 @@ The agent discovers indicators with `search_sdoh_indicators`, fetches values wit
 
 ### Prompt tips
 
-- **Name the geography and year** — e.g. “Indiana counties, 2021” or “Ohio, 2023”.
+- **Name the geography and year** — e.g. “Indiana counties, 2021” or “Ohio, 2023”. Data Commons indicator search is scoped to a place (default: the United States). Naming the geography lets the agent check that series exist there.
 - **Ask for sources when exploring** — e.g. “include repository and indicator_id”.
 - **For PLACES HRSN topics** (loneliness, food insecurity, housing insecurity) — mention `cdcplaces` or use wording the agent maps to PLACES; prefer age-adjusted prevalence when comparing counties.
 - **For maps** — specify level (`county`, `zip`, `tract`, `state`) and place ids or a parent state/county. ZIP maps use `zip/#####` place keys, not `geoId/#####`. National US maps crop to the contiguous states so Alaska’s Aleutian islands (across the date line) do not shrink the country.

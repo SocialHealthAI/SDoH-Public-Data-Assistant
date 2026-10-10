@@ -28,7 +28,7 @@ langchain-groq = "^0.3.7"
 langchain-mcp-adapters = "^0.1.9"
 # Official MCP SDK 1.x — adapters 0.1.x import mcp.shared.session (removed in mcp 2).
 mcp = ">=1.24.0,<2.0.0"
-# Shared LLM/loop/audit cores — GitHub only (no local path). Pin a tag when Core publishes one.
+# Shared LLM/loop/audit cores — GitHub only (no local path).
 sdoh-core = { git = "https://github.com/SocialHealthAI/SDoH-Core-Assistant.git", branch = "main" }
 tavily-python = "^0.3.0"      # Direct Tavily API client (latest stable)
 numexpr = "^2.8.8"

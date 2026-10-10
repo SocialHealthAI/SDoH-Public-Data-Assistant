@@ -8,7 +8,12 @@ except ImportError:
 
 from unittest.mock import patch
 
-from tools.sdoh_search_tool import SdohSearchTool
+from tools.sdoh_search_tool import (
+    PlaceScope,
+    SdohSearchTool,
+    _table_rows_as_dicts,
+    dc_search_places,
+)
 
 
 class _StubTool:
@@ -115,3 +120,121 @@ def test_run_cdcplaces_only():
     assert out["sources_checked"] == ["cdcplaces"]
     assert any("FOODINSECU" in r["indicator_id"] for r in out["results"])
     assert all(r["source"] == "cdcplaces" for r in out["results"])
+
+
+def test_table_rows_as_dicts_maps_columns():
+    table = {
+        "columns": ["dcid", "name", "placesWithData"],
+        "rows": [
+            ["Count_Person", "population count", []],
+            ["Count_Person_PerArea", "Population Density", []],
+        ],
+    }
+    rows = _table_rows_as_dicts(table)
+    assert rows[0]["dcid"] == "Count_Person"
+    assert rows[1]["name"] == "Population Density"
+
+
+def test_dc_search_places_defaults_to_united_states():
+    assert dc_search_places(None) == ["United States"]
+    assert dc_search_places(PlaceScope()) == ["United States"]
+    assert dc_search_places(PlaceScope(within="Franklin County, OH")) == ["Franklin County, OH"]
+
+
+def test_normalize_variable_candidates_table():
+    tool = _make_search_tool()
+    raw = {
+        "status": "SUCCESS",
+        "variableCandidates": {
+            "columns": ["dcid", "name", "placesWithData", "observationProperties"],
+            "rows": [
+                ["Count_Person", "population count", {"value": [], "Count": 0}, {"value": [], "Count": 0}],
+                ["Median_Age_Person", "Median age of population", {"value": [], "Count": 0}, {}],
+            ],
+        },
+        "topicCandidates": {
+            "columns": ["dcid", "name", "memberVariables"],
+            "rows": [["dc/topic/Demographics", "Demographics", ["Count_Person_Female"]]],
+        },
+    }
+    items = tool._normalize_dc_results(raw, max_results=10, include_metric_source=False)
+    native_ids = [i["native_id"] for i in items]
+    assert native_ids[:2] == ["Count_Person", "Median_Age_Person"]
+    assert items[0]["name"] == "population count"
+    assert "Count_Person_Female" in native_ids
+
+
+def test_normalize_place_scoped_camel_case_payload():
+    tool = _make_search_tool()
+    raw = {
+        "status": "SUCCESS",
+        "dcidNameMappings": {
+            "Count_Person": "population count",
+            "Count_Person_PerArea": "Population Density",
+        },
+        "topics": [
+            {
+                "dcid": "dc/topic/Demographics",
+                "memberVariables": ["Count_Person_Female"],
+                "description": "Demographics",
+            }
+        ],
+        "variables": [
+            {"dcid": "Count_Person", "placesWithData": ["country/USA"]},
+            {"dcid": "Count_Person_PerArea", "placesWithData": ["country/USA"]},
+        ],
+    }
+    items = tool._normalize_dc_results(raw, max_results=10, include_metric_source=False)
+    by_id = {i["native_id"]: i for i in items}
+    assert by_id["Count_Person"]["name"] == "population count"
+    assert by_id["Count_Person_PerArea"]["name"] == "Population Density"
+    assert "Count_Person_Female" in by_id
+
+
+def test_normalize_legacy_snake_case_payload():
+    tool = _make_search_tool()
+    raw = {
+        "variables": [{"dcid": "Count_Person"}],
+        "dcid_name_mappings": {"Count_Person": "Total population"},
+    }
+    items = tool._normalize_dc_results(raw, max_results=5, include_metric_source=False)
+    assert items == [
+        {
+            "indicator_id": "datacommons:Count_Person",
+            "source": "datacommons",
+            "native_id": "Count_Person",
+            "name": "Total population",
+            "type": "StatisticalVariable",
+            "description": None,
+            "repository": {"name": "Data Commons"},
+            "metric_source": None,
+        }
+    ]
+
+
+def test_run_forwards_default_and_explicit_places():
+    tool = _make_search_tool()
+    captured: dict = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"variables": [{"dcid": "Count_Person"}], "dcidNameMappings": {"Count_Person": "population count"}}
+
+    tool._call_dc_search = _capture  # type: ignore[method-assign]
+    tool._search_cms = lambda **kwargs: []  # type: ignore[method-assign]
+
+    out = tool._run(query="population", sources=["datacommons"], max_results=5, include_metric_source=False)
+    assert captured["places"] == ["United States"]
+    assert any("United States" in w for w in out["warnings"])
+    assert out["results"][0]["native_id"] == "Count_Person"
+
+    captured.clear()
+    out = tool._run(
+        query="population",
+        sources=["datacommons"],
+        place_scope=PlaceScope(within="Ohio"),
+        max_results=5,
+        include_metric_source=False,
+    )
+    assert captured["places"] == ["Ohio"]
+    assert not any("United States" in w for w in out["warnings"])

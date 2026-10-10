@@ -11,6 +11,7 @@
 
 | Task ID | Feature | Status | Created |
 |---------|---------|--------|---------|
+| [add-document-support](active/add-document-support/feature-brief.md) | Add AI Solution Requirements document support | Ready for Development | 2026-10-01 |
 | [refactor-use-core](active/refactor-use-core/feature-brief.md) | Consume SDoH Core via GitHub | Ready for Development | 2026-09-28 |
 
 ### Completed Features
