@@ -2,177 +2,147 @@
 
 This project uses Docker Compose to run two services on a shared network:
 
-- **public-data-assistant** — Streamlit chat UI and LangChain agent (tools for search, observations, statistics, charts, maps, and optional AI Solution Requirements Definition updates).
-- **data-commons-mcp** — Local [Data Commons MCP](https://docs.datacommons.org/mcp/) server used for indicator search and as a fallback for observations.
+- **public-data-assistant** — Streamlit chat UI and LangChain agent.
+- **data-commons-mcp** — Local [Data Commons MCP](https://docs.datacommons.org/mcp/) server.
+- 
+Both run modes start from a **clone of this repository**. Compose reads `docker-compose.yaml` from the repo, and the assistant mounts host `./agents` into the container, so a clone is required even when you pull images from Docker Hub.
 
-CMS and CDC PLACES data are accessed over the public internet from the assistant container; no extra containers are required for those sources.
-
-##### Prerequisites
-
-Before getting started, ensure you have the following:
+### Prerequisites
 
 - Docker Engine and the Docker Compose plugin
-- Git (for cloning this repository). A **local image build** also uses Git inside Docker to fetch [`sdoh_core`](https://github.com/SocialHealthAI/SDoH-Core-Assistant) from GitHub.
+- Git (to clone this repository).
 - At least 8 GB of RAM and 10 GB of free disk space
+- API keys (see Configure Environment)
+  - OpenAI *or* Anthropic, depending on `LLM_PROVIDER`
+  - A [Data Commons API key](https://docs.datacommons.org/api/)
 
-Platform install guides:
-
-
-| Platform | Guide                                                                                         |
-| -------- | --------------------------------------------------------------------------------------------- |
+| Platform | Guide |
+| -------- | ----- |
 | Windows  | [Install Docker Desktop on Windows](https://docs.docker.com/desktop/install/windows-install/) |
-| macOS    | [Install Docker Desktop on Mac](https://docs.docker.com/desktop/install/mac-install/)         |
-| Linux    | [Install Docker Engine on Linux](https://docs.docker.com/engine/install/)                     |
+| macOS    | [Install Docker Desktop on Mac](https://docs.docker.com/desktop/install/mac-install/) |
+| Linux    | [Install Docker Engine on Linux](https://docs.docker.com/engine/install/) |
 
-
-##### Configure environment
-
-Copy `.env.example` to `.env` and edit the values.
-
-Required variables:
-
-
-| Variable                     | Purpose                                                                                                                                        |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENAI_API_KEY`             | Required when `LLM_PROVIDER=openai` (default). Powers the reasoning and audit LLMs.                                                            |
-| `ANTHROPIC_API_KEY`          | Required when `LLM_PROVIDER=anthropic`. Same chat and audit path as OpenAI; see **Use Anthropic (Claude)** below.                              |
-| `DC_API_KEY`                 | Data Commons API key for batched observations, place expansion, and map boundaries. See [Data Commons API](https://docs.datacommons.org/api/). |
-| `DATACOMMONS_URI`            | MCP endpoint for the assistant container. Use `http://data-commons-mcp:3000/mcp` with the default compose setup.                               |
-| `DATACOMMONS_CONTAINER_PORT` | Port for the MCP server (default `3000`). Must match the port in `DATACOMMONS_URI`.                                                            |
-
-
-LLM selection (`sdoh_core` reads these; Compose passes them into `public-data-assistant`):
-
-
-| Variable            | Purpose                                                                                                                                           |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LLM_PROVIDER`      | `openai` (default) or `anthropic` (`claude` is accepted as an alias for Anthropic).                                                               |
-| `LLM_MODEL`         | Optional override. Empty uses Core defaults: `gpt-5.2` (OpenAI) or `claude-sonnet-5` (Anthropic).                                                 |
-| `ANTHROPIC_API_KEY` | Required when `LLM_PROVIDER=anthropic`. Create a key in the [Anthropic Console](https://console.anthropic.com/).                                  |
-
-
-###### Use Anthropic (Claude)
-
-The default stack is OpenAI. To run the assistant and the audit pass on Claude instead:
-
-1. Create an API key in the [Anthropic Console](https://console.anthropic.com/).
-2. In `.env`, comment the OpenAI provider lines and set Anthropic (this matches the commented block in `.env.example`):
-
-```env
-# OPENAI_API_KEY=
-# LLM_PROVIDER=openai
-# LLM_MODEL=
-
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-sonnet-5
-ANTHROPIC_API_KEY=your-anthropic-key
-```
-
-Leave `OPENAI_API_KEY` unset or commented; it is not used when the provider is Anthropic. You can omit `LLM_MODEL` to get Core’s default (`claude-sonnet-5`), or set another Claude model id that `langchain-anthropic` accepts.
-
-3. Recreate the assistant container so it picks up the new env vars:
+### 1. Clone the repository
 
 ```
-docker compose up -d public-data-assistant
+git clone https://github.com/SocialHealthAI/SDoH-Public-Data-Assistant.git
+cd SDoH-Public-Data-Assistant
 ```
 
-If the container was already running, `docker compose up -d` recreates it when `.env` changes. Both the chat agent and **Run Audit** use the same `LLM_PROVIDER` / `LLM_MODEL`.
+### 2. Configure Environment
 
-To switch back to OpenAI, restore `LLM_PROVIDER=openai`, `OPENAI_API_KEY`, and comment or remove the Anthropic block, then recreate the container again.
+1. Copy the template and edit it:
 
+```
+cp .env.example .env
+```
+On Windows: 
+```
+copy .env.example .env
+```
 
-Optional:
+2. Set the keys for the LLM you will use, plus Data Commons (see tables below).
+3. Create the shared documents folder if it does not exist (default host path `../sdoh_documents`, a sibling of this repo). 
 
+### 3. Use DockerHub Images or Build Images
 
-| Variable                | Purpose                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------- |
-| `ASSISTANT_IMAGE`       | Docker image for the assistant service (see below)                               |
-| `DATACOMMONS_MCP_IMAGE` | Docker image for the MCP service (see below)                                     |
-| `CDC_PLACES_APP_TOKEN`  | Socrata app token for CDC PLACES (higher rate limits)                            |
-| `ASSISTANT_HOST_PORT`   | Host port for the Streamlit UI (default `8052`)                                  |
-| `ASSISTANT_BIND`        | Bind address for the UI (default `127.0.0.1`; use `0.0.0.0` to allow LAN access) |
-| `SDOH_DOCUMENTS_HOST`   | Host path for the shared `sdoh_documents/` folder (default `../sdoh_documents`, sibling of this repo). Other SDoH assistants use the same folder. |
-| `DOCUMENTS_ROOT`        | Path inside the assistant container (default `/documents`). Compose mounts `SDOH_DOCUMENTS_HOST` there. |
+#### Option 1 — Docker Hub images (default)
+Use published images and skip building:
+- [jeffgunderson/public-data-assistant](https://hub.docker.com/r/jeffgunderson/public-data-assistant)
+- [jeffgunderson/data-commons-mcp](https://hub.docker.com/r/jeffgunderson/data-commons-mcp)
 
+Keep these lines active in `.env` (they are already uncommented in `.env.example`):
 
-##### Docker images: local build or Docker Hub
+```
+ASSISTANT_IMAGE=jeffgunderson/public-data-assistant:latest
+DATACOMMONS_MCP_IMAGE=jeffgunderson/data-commons-mcp:latest
+```
+Pull and start **without** building:
 
-You can run the stack in two ways. Both are configured in `.env` by setting `ASSISTANT_IMAGE` and `DATACOMMONS_MCP_IMAGE`. **Use different tags for each mode** so local builds do not overwrite images pulled from Hub.
+```
+docker compose pull
+docker compose up -d --no-build
+```
 
+Then open:
 
-| Mode            | When to use                                                                     | Image tags in `.env`                                                                  |
-| --------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Local build** | Developing this repo or changing Dockerfiles. The assistant image build needs network access to GitHub to install `sdoh-core`. | `public-data-assistant:local`, `data-commons-mcp:local` |
-| **Docker Hub**  | Quick start without building, or running a published release on another machine | `jeffgunderson/public-data-assistant:latest`, `jeffgunderson/data-commons-mcp:latest` |
+```
+http://localhost:8052
+```
 
+#### Option 2 — Local build
+Build when you are changing Dockerfiles or want images produced on this machine.
 
-`.env.example` shows both pairs. Comment one pair and uncomment the other:
+In `.env`, comment the Hub tags and uncomment the local tags:
 
-```env
-# Docker Hub — pull/run
-# ASSISTANT_IMAGE=jeffgunderson/public-data-assistant:latest
-# DATACOMMONS_MCP_IMAGE=jeffgunderson/data-commons-mcp:latest
+```
+# Docker Hub
+#ASSISTANT_IMAGE=jeffgunderson/public-data-assistant:latest
+#DATACOMMONS_MCP_IMAGE=jeffgunderson/data-commons-mcp:latest
 
-# Local build — default in .env.example
+# Local build
 ASSISTANT_IMAGE=public-data-assistant:local
 DATACOMMONS_MCP_IMAGE=data-commons-mcp:local
 ```
 
-**Why this matters:** `docker-compose.yaml` includes both `image:` and `build:` for each service. The `image:` value is the tag Compose applies after a build *or* the name it uses when pulling. If local builds and Hub images share the same tag (for example `jeffgunderson/...:latest`), Compose cannot tell them apart and `docker compose up --build` will rebuild locally even when you intended to run from Hub.
-
-**Development note:** The assistant service mounts `./agents` into the container at `/myapps`. When that volume is present, the running app uses your host copy of the agent code regardless of whether the image was built locally or pulled from Hub. The MCP service has no source mount; it runs entirely from the image.
-
-Create the shared documents folder on the host if it does not exist (for example `C:\installs\sdoh_documents` next to this repo). The sidebar starts at `sdoh_documents/` with no filename; type a file name when you want Confirm-before-write updates.
-
-A local image build installs `sdoh-core` from GitHub `main` (AfterTurnHook and folder-only paths).
-
-#### Option A — Local build (default)
-
-From the repository root:
+Build and start:
 
 ```
 docker compose up --build
 ```
 
-On first run, Compose builds both images and tags them with the `:local` names from `.env`. Subsequent starts are faster if the images are already built. To rebuild without starting:
+On first run this builds both images and tags them `:local`. Later starts are faster. To rebuild without starting:
 
 ```
 docker compose build
 ```
 
-To rebuild a single service:
+A single service:
 
 ```
 docker compose build public-data-assistant
 docker compose build data-commons-mcp
 ```
 
-#### Option B — Docker Hub images
+To run detached after a build: `docker compose up -d`.
 
-Published images:
+Then open `http://localhost:8052` (or your `ASSISTANT_HOST_PORT`).
 
-- [jeffgunderson/public-data-assistant](https://hub.docker.com/r/jeffgunderson/public-data-assistant)
-- [jeffgunderson/data-commons-mcp](https://hub.docker.com/r/jeffgunderson/data-commons-mcp)
+### Environment variables
 
-1. In `.env`, comment the `:local` lines and uncomment the `jeffgunderson/...` lines.
-2. Pull and start **without** building:
+#### Required for a working chat
 
-```
-docker login
-docker compose pull
-docker compose up --no-build
-```
+| Variable | Purpose |
+| -------- | ------- |
+| `OPENAI_API_KEY` | Required when `LLM_PROVIDER=openai` (the default). |
+| `ANTHROPIC_API_KEY` | Required when `LLM_PROVIDER=anthropic`. |
+| `DC_API_KEY` | Data Commons key for batched observations, place expansion, and map boundaries. See [Data Commons API](https://docs.datacommons.org/api/). |
 
-Use `--no-build` so Compose does not rebuild from the Dockerfiles in this repo. If a stale local image with the same tag already exists, `docker compose pull` refreshes it from Hub.
-
-To switch back to local development, reverse the comments in `.env` and run `docker compose up --build`.
-
-##### Open the assistant
+#### LLM selection
+Set the LLM variables, LLM_PROVIDER, LLM_MODEL, and the OPENAI_API_KEY or the ANTHROPIC_API_KEY.  For example, to use Anthropic:
 
 ```
-http://localhost:8052
+# LLM_PROVIDER=openai
+# LLM_MODEL=gpt-5.2
+# OPENAI_API_KEY=
+
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-sonnet-5
+ANTHROPIC_API_KEY=your-anthropic-key
 ```
 
-Replace the port if you changed `ASSISTANT_HOST_PORT`.
+#### Usually leave as in `.env.example`
 
-See [usage.md](./usage.md) for example prompts and tips on keeping requests within model limits.
+| Variable | Purpose |
+| -------- | ------- |
+| `ASSISTANT_IMAGE` | Assistant image tag (Hub `latest` or local `:local`). |
+| `DATACOMMONS_MCP_IMAGE` | MCP image tag (Hub `latest` or local `:local`). |
+| `DATACOMMONS_URI` | MCP URL inside the compose network. Default `http://data-commons-mcp:3000/mcp`. |
+| `DATACOMMONS_CONTAINER_PORT` | MCP port (default `3000`). Must match the port in `DATACOMMONS_URI`. |
+| `ASSISTANT_HOST_PORT` | Host port for the Streamlit UI (default `8052`). |
+| `ASSISTANT_BIND` | Bind address (default `127.0.0.1`; use `0.0.0.0` to allow LAN access). |
+| `SDOH_DOCUMENTS_HOST` | Host path for shared `sdoh_documents/` (default `../sdoh_documents`). Other SDoH assistants use the same folder. |
+| `DOCUMENTS_ROOT` | Path inside the assistant container (default `/documents`). Compose mounts `SDOH_DOCUMENTS_HOST` there. |
+| `CDC_PLACES_APP_TOKEN` | Optional Socrata app token for CDC PLACES (higher rate limits). |
+
+

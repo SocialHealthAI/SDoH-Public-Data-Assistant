@@ -12,7 +12,7 @@ An optional **audit** pass reviews the agent's reasoning steps and final answer 
 
 ### Quickstart
 
-To start the assistant with minimal setup:
+This is **Option 1** in [installation.md](./documentation/installation.md): pull Docker Hub images and skip building.
 
 1. **Install prerequisites:** [Docker Engine](https://docs.docker.com/engine/install/) with the [Docker Compose plugin](https://docs.docker.com/compose/install/), and Git. At least 8 GB RAM is recommended.
 2. **Clone this repository:**
@@ -22,24 +22,35 @@ git clone https://github.com/SocialHealthAI/SDoH-Public-Data-Assistant.git
 cd SDoH-Public-Data-Assistant
 ```
 
-1. **Configure environment variables:** Copy `.env.example` to `.env` and set your keys.
-  - `OPENAI_API_KEY` — required when `LLM_PROVIDER=openai` (the default).
-  - `ANTHROPIC_API_KEY` — required when testing with `LLM_PROVIDER=anthropic` (default model `claude-sonnet-5`).
-  - `DC_API_KEY` — required for Data Commons maps, place expansion, and batched observation fetches. Request a key from the [Data Commons API documentation](https://docs.datacommons.org/api/).
-  - Shared documents folder — default host path `../sdoh_documents` (create it if needed). The sidebar starts with no requirements filename.
-2. **Build and start the containers** (`public-data-assistant` and `data-commons-mcp`):
+3. **Configure environment:** Copy `.env.example` to `.env` and set your keys.
 
 ```
-docker compose up
+cp .env.example .env
 ```
 
-1. **Open the assistant** in your browser (default):
+On Windows: `copy .env.example .env`
+
+Keep these Hub image lines (already uncommented in `.env.example`):
+
+```
+ASSISTANT_IMAGE=jeffgunderson/public-data-assistant:latest
+DATACOMMONS_MCP_IMAGE=jeffgunderson/data-commons-mcp:latest
+```
+
+Set `OPENAI_API_KEY` (default `LLM_PROVIDER=openai`) or `ANTHROPIC_API_KEY` (`LLM_PROVIDER=anthropic`), plus `DC_API_KEY` from the [Data Commons API documentation](https://docs.datacommons.org/api/). Create the shared documents folder if needed (default host path `../sdoh_documents`).
+
+4. **Pull and start without building:**
+
+```
+docker compose pull
+docker compose up -d --no-build
+```
+
+5. **Open the assistant:**
 
 ```
 http://localhost:8052
 ```
-
-For detailed instructions, see [installation.md](./documentation/installation.md).
 
 ### Features
 
